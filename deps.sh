@@ -15,6 +15,7 @@ update_deps() {
   npm install
   rm package.json
   git status
+  echo "node `node -v`; npm `npm -v`; `date`"
 }
 
 if [[ "$1" = "" || "$2" = "" ]]; then
