@@ -1,16 +1,17 @@
 #!/bin/bash
-
 abspath() { cd $(dirname $1); echo $(pwd)/$(basename $1); }
 
 usage="USAGE: $0 (sync|update) <heim-dir>"
 SRCDIR=$(dirname `abspath $0`)
 
 sync_deps() {
+  set -x
   rsync -rult --delete $SRCDIR/node_modules $1/client
 }
 
 update_deps() {
   cd $SRCDIR
+  set -x
   cp $1/client/package.json ./
   npm install
   rm package.json
