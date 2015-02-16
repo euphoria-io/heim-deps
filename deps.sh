@@ -6,7 +6,7 @@ usage="USAGE: $0 (sync|update) <heim-dir>"
 SRCDIR=$(dirname `abspath $0`)
 
 sync_deps() {
-  rsync -rut --delete $SRCDIR/node_modules $1/client
+  rsync -rult --delete $SRCDIR/node_modules $1/client
 }
 
 update_deps() {
