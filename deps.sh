@@ -2,17 +2,16 @@
 abspath() { cd $(dirname $1); echo $(pwd)/$(basename $1); }
 
 usage="USAGE: $0 (sync|update) <heim-dir>"
-SRCDIR=$(dirname `abspath $0`)
 
 sync_deps() {
   set -x
-  rsync -rlt --delete $SRCDIR/node_modules $1/client
+  rsync -rlt --delete $SRCDIR/node_modules $HEIMDIR/client
 }
 
 update_deps() {
   cd $SRCDIR
   set -x
-  cp $1/client/package.json ./
+  cp $HEIMDIR/client/package.json ./
 
   npm install
 
@@ -37,12 +36,15 @@ if [[ "$1" = "" || "$2" = "" ]]; then
   exit 1
 fi
 
+SRCDIR=$(dirname `abspath $0`)
+HEIMDIR=$(abspath $2)
+
 case $1 in
   sync)
-    sync_deps $2
+    sync_deps
     ;;
   update)
-    update_deps $2
+    update_deps
     ;;
   *)
     echo $usage
