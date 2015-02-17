@@ -4,13 +4,10 @@ abspath() { cd $(dirname $1); echo $(pwd)/$(basename $1); }
 usage="USAGE: $0 (sync|update) <heim-dir>"
 
 sync_deps() {
-  set -x
   rsync -rlt --delete $SRCDIR/node_modules $HEIMDIR/client
 }
 
-update_deps() {
-  cd $SRCDIR
-  set -x
+update_js_deps() {
   cp $HEIMDIR/client/package.json ./
 
   npm install
@@ -26,9 +23,25 @@ update_deps() {
   npm dedupe
 
   rm package.json package.json.original
+}
 
-  git status
-  echo "node `node -v`; npm `npm -v`; `date`"
+update_go_deps() {
+  mkdir -p godeps/src go/src
+  ln -sf $HEIMDIR go/src
+
+  GOPATH=`pwd`/godeps:`pwd`/go go get -d heim/cmd/heimlich heim/cmd/heim-backend
+
+  # jank alert: retain the git information but not create submodules.
+  find godeps -depth -name .git -type d -execdir mv .git git \;
+
+  rm -rf go
+}
+
+print_versions() {
+  set +x
+  echo "node `node -v`; npm `npm -v`"
+  go version
+  date
 }
 
 if [[ "$1" = "" || "$2" = "" ]]; then
@@ -39,12 +52,23 @@ fi
 SRCDIR=$(dirname `abspath $0`)
 HEIMDIR=$(abspath $2)
 
+cd $SRCDIR
+set -x
+
 case $1 in
   sync)
     sync_deps
     ;;
+  update-go)
+    update_go_deps
+    ;;
+  update-js)
+    update_js_deps
+    ;;
   update)
-    update_deps
+    update_go_deps
+    update_js_deps
+    print_versions
     ;;
   *)
     echo $usage
