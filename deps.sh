@@ -28,10 +28,11 @@ update_js_deps() {
 }
 
 update_go_deps() {
+  rm -rf godeps
   mkdir -p godeps/src go/src
-  ln -sf $HEIMDIR go/src
+  cp -r $HEIMDIR go/src
 
-  GOPATH=`pwd`/godeps:`pwd`/go go get -d heim/cmd/heimlich heim/cmd/heim-backend
+  GOPATH=`pwd`/godeps:`pwd`/go go get -d -t heim/...
 
   # jank alert: retain the git information but not create submodules.
   find godeps -depth -name .git -type d -execdir mv .git git \;
