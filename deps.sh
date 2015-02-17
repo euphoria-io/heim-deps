@@ -6,7 +6,7 @@ SRCDIR=$(dirname `abspath $0`)
 
 sync_deps() {
   set -x
-  rsync -rult --delete $SRCDIR/node_modules $1/client
+  rsync -rlt --delete $SRCDIR/node_modules $1/client
 }
 
 update_deps() {
