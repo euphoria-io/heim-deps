@@ -13,8 +13,21 @@ update_deps() {
   cd $SRCDIR
   set -x
   cp $1/client/package.json ./
+
   npm install
-  rm package.json
+
+  # a few hacks to reduce footprint...
+
+  # remove tests
+  find -name test -type d -print0 | xargs -0 rm -r
+
+  # merge devDependencies into dependencies so `npm dedupe` considers them.
+  perl -0777 -i.original -pe 's/\n  },\n  "devDependencies": {\n/,\n/igs' package.json
+  for d in node_modules/*; do pushd $d; npm dedupe; popd; done
+  npm dedupe
+
+  rm package.json package.json.original
+
   git status
   echo "node `node -v`; npm `npm -v`; `date`"
 }
