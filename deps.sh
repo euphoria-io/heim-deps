@@ -42,8 +42,8 @@ update_go_deps() {
 
 print_versions() {
   set +x
-  echo "node `node -v`; npm `npm -v`"
   go version
+  echo "node `node -v`; npm `npm -v`"
   date
 }
 
