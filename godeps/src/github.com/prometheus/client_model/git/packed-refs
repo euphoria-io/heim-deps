@@ -1,0 +1,6 @@
+# pack-refs with: peeled fully-peeled 
+4fdbcd35ff0046f177ed2012bb63e30e95dee4b1 refs/remotes/origin/feature/new-proto-format
+93158b12c5a2f8f2f923dfa563decdcd69fdcb53 refs/remotes/origin/github-package
+fa8ad6fec33561be4280a8f0514318c79d7f6cb6 refs/remotes/origin/master
+58fd25885f9df214b26caca41705800c6f2c9f98 refs/tags/model-0.0.2
+^409ab69f7ffb80ae3db658d5a56f485285ec7450

@@ -6,6 +6,7 @@ usage="USAGE: $0 (link|update) <heim-dir>"
 link_deps() {
   mkdir -p $HEIMDIR/deps
   ln -s $SRCDIR/node_modules $HEIMDIR/deps/node_modules
+  ln -s $SRCDIR/node_modules $HEIMDIR/client/node_modules
   ln -s $SRCDIR/godeps $HEIMDIR/deps/godeps
 }
 
