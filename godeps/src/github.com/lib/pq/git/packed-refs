@@ -1,7 +1,0 @@
-# pack-refs with: peeled fully-peeled 
-d6a313381f58fbd3b0caf8e31c113b1dd13ed883 refs/remotes/origin/1895-fix
-2b75ec00c58d63ea65ff0792fe2f990129b59cbd refs/remotes/origin/go1.0
-f7ea31d05cd1cccff3ba98af46ccc261d4ff3fdd refs/remotes/origin/master
-b5d721a4f82a5fee7042c773fa51ffc276861444 refs/remotes/origin/null-time
-dc6073ceb30afb2317d809223da6e06bc0a52fe2 refs/remotes/origin/parse-url
-5da87320b996b433460a8930bb6b8f4e5672d371 refs/tags/go1.0-cutoff
