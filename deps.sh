@@ -34,8 +34,8 @@ update_go_deps() {
 
   GOPATH=`pwd`/godeps:`pwd`/go go get -d -t heim/...
 
-  # jank alert: retain the git information but not create submodules.
-  find godeps -depth -name .git -type d -execdir mv .git git \;
+  # save the commit hash of deps but remove the git metadata so we don't create submodules.
+  find godeps -depth -name .git -type d -execdir sh -c "git rev-parse HEAD > git-HEAD; rm -rf .git" \;
 
   rm -rf go
 }
