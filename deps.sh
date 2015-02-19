@@ -27,6 +27,10 @@ update_js_deps() {
   rm package.json package.json.original
 }
 
+print_js_versions() {
+  echo "node `node -v`; npm `npm -v`"
+}
+
 update_go_deps() {
   rm -rf godeps
   mkdir -p godeps/src go/src
@@ -40,11 +44,8 @@ update_go_deps() {
   rm -rf go
 }
 
-print_versions() {
-  set +x
+print_go_versions() {
   go version
-  echo "node `node -v`; npm `npm -v`"
-  date
 }
 
 if [[ "$1" = "" || "$2" = "" ]]; then
@@ -64,14 +65,20 @@ case $1 in
     ;;
   update-go)
     update_go_deps
+    print_go_versions
+    date
     ;;
   update-js)
     update_js_deps
+    print_js_versions
+    date
     ;;
   update)
     update_go_deps
     update_js_deps
-    print_versions
+    print_go_versions
+    print_js_versions
+    date
     ;;
   *)
     echo $usage
