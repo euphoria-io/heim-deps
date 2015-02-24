@@ -14,6 +14,12 @@ update_js_deps() {
 
   npm install
 
+  rm package.json
+}
+
+compact_js_deps() {
+  cp $HEIMDIR/client/package.json ./
+
   # a few hacks to reduce footprint...
 
   # remove tests
@@ -70,6 +76,11 @@ case $1 in
     ;;
   update-js)
     update_js_deps
+    print_js_versions
+    date
+    ;;
+  compact-js)
+    compact_js_deps
     print_js_versions
     date
     ;;
