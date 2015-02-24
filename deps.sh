@@ -34,6 +34,7 @@ compact_js_deps() {
 }
 
 print_js_versions() {
+  set +x
   echo "node `node -v`; npm `npm -v`"
 }
 
@@ -51,6 +52,7 @@ update_go_deps() {
 }
 
 print_go_versions() {
+  set +x
   go version
 }
 
