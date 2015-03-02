@@ -45,6 +45,11 @@ update_go_deps() {
 
   GOPATH=`pwd`/godeps:`pwd`/go go get -d -t heim/...
 
+  # pin go-etcd to v0.4.6 (until coreos upgrades to etcd 2.0)
+  git --git-dir=godeps/src/github.com/coreos/go-etcd/.git \
+      --work-tree=godeps/src/github.com/coreos/go-etcd \
+      checkout 6aa2da5
+
   # save the commit hash of deps but remove the git metadata so we don't create submodules.
   find godeps -depth -name .git -type d -execdir sh -c "git rev-parse HEAD > git-HEAD; rm -rf .git" \;
 
