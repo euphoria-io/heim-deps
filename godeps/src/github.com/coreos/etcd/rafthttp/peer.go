@@ -15,271 +15,203 @@
 package rafthttp
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
+	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/etcdserver/stats"
-	"github.com/coreos/etcd/pkg/pbutil"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft/raftpb"
 )
 
 const (
-	connPerSender = 4
-	// senderBufSize is the size of sender buffer, which helps hold the
-	// temporary network latency.
-	// The size ensures that sender does not drop messages when the network
-	// is out of work for less than 1 second in good path.
-	senderBufSize = 64
-
-	appRespBatchMs = 50
-	propBatchMs    = 10
-
+	DialTimeout      = time.Second
 	ConnReadTimeout  = 5 * time.Second
 	ConnWriteTimeout = 5 * time.Second
+
+	recvBufSize = 4096
 )
 
-type peer struct {
-	sync.Mutex
-
-	id  types.ID
-	cid types.ID
-
-	tr     http.RoundTripper
-	r      Raft
-	fs     *stats.FollowerStats
-	errorc chan error
-
-	batcher     *Batcher
-	propBatcher *ProposalBatcher
-	q           chan *raftpb.Message
-
-	stream *stream
-
-	// wait for the handling routines
-	wg sync.WaitGroup
-
-	// the url this sender post to
-	u string
-	// if the last send was successful, the sender is active.
-	// Or it is inactive
-	active  bool
-	errored error
-	paused  bool
-	stopped bool
+type Peer interface {
+	// Send sends the message to the remote peer. The function is non-blocking
+	// and has no promise that the message will be received by the remote.
+	// When it fails to send message out, it will report the status to underlying
+	// raft.
+	Send(m raftpb.Message)
+	// Update updates the urls of remote peer.
+	Update(u string)
+	// attachOutgoingConn attachs the outgoing connection to the peer for
+	// stream usage. After the call, the ownership of the outgoing
+	// connection hands over to the peer. The peer will close the connection
+	// when it is no longer used.
+	attachOutgoingConn(conn *outgoingConn)
+	// Stop performs any necessary finalization and terminates the peer
+	// elegantly.
+	Stop()
 }
 
-func NewPeer(tr http.RoundTripper, u string, id types.ID, cid types.ID, r Raft, fs *stats.FollowerStats, errorc chan error) *peer {
+// peer is the representative of a remote raft node. Local raft node sends
+// messages to the remote through peer.
+// Each peer has two underlying mechanisms to send out a message: stream and
+// pipeline.
+// A stream is a receiver initialized long-polling connection, which
+// is always open to transfer messages. Besides general stream, peer also has
+// a optimized stream for sending msgApp since msgApp accounts for large part
+// of all messages. Only raft leader uses the optimized stream to send msgApp
+// to the remote follower node.
+// A pipeline is a series of http clients that send http requests to the remote.
+// It is only used when the stream has not been established.
+type peer struct {
+	id types.ID
+
+	msgAppWriter *streamWriter
+	writer       *streamWriter
+	pipeline     *pipeline
+
+	sendc   chan raftpb.Message
+	recvc   chan raftpb.Message
+	newURLc chan string
+	// for testing
+	pausec  chan struct{}
+	resumec chan struct{}
+
+	stopc chan struct{}
+	done  chan struct{}
+}
+
+func startPeer(tr http.RoundTripper, u string, local, to, cid types.ID, r Raft, fs *stats.FollowerStats, errorc chan error) *peer {
 	p := &peer{
-		id:          id,
-		active:      true,
-		tr:          tr,
-		u:           u,
-		cid:         cid,
-		r:           r,
-		fs:          fs,
-		stream:      &stream{},
-		errorc:      errorc,
-		batcher:     NewBatcher(100, appRespBatchMs*time.Millisecond),
-		propBatcher: NewProposalBatcher(100, propBatchMs*time.Millisecond),
-		q:           make(chan *raftpb.Message, senderBufSize),
+		id:           to,
+		msgAppWriter: startStreamWriter(fs, r),
+		writer:       startStreamWriter(fs, r),
+		pipeline:     newPipeline(tr, u, to, cid, fs, r, errorc),
+		sendc:        make(chan raftpb.Message),
+		recvc:        make(chan raftpb.Message, recvBufSize),
+		newURLc:      make(chan string),
+		pausec:       make(chan struct{}),
+		resumec:      make(chan struct{}),
+		stopc:        make(chan struct{}),
+		done:         make(chan struct{}),
 	}
-	p.wg.Add(connPerSender)
-	for i := 0; i < connPerSender; i++ {
-		go p.handle()
-	}
+	go func() {
+		var paused bool
+		msgAppReader := startStreamReader(tr, u, streamTypeMsgApp, local, to, cid, p.recvc)
+		reader := startStreamReader(tr, u, streamTypeMessage, local, to, cid, p.recvc)
+		for {
+			select {
+			case m := <-p.sendc:
+				if paused {
+					continue
+				}
+				writec, name, size := p.pick(m)
+				select {
+				case writec <- m:
+				default:
+					log.Printf("peer: dropping %s to %s since %s with %d-size buffer is blocked",
+						m.Type, p.id, name, size)
+				}
+			case mm := <-p.recvc:
+				if mm.Type == raftpb.MsgApp {
+					msgAppReader.updateMsgAppTerm(mm.Term)
+				}
+				if err := r.Process(context.TODO(), mm); err != nil {
+					log.Printf("peer: process raft message error: %v", err)
+				}
+			case u := <-p.newURLc:
+				msgAppReader.update(u)
+				reader.update(u)
+				p.pipeline.update(u)
+			case <-p.pausec:
+				paused = true
+			case <-p.resumec:
+				paused = false
+			case <-p.stopc:
+				p.msgAppWriter.stop()
+				p.writer.stop()
+				p.pipeline.stop()
+				msgAppReader.stop()
+				reader.stop()
+				close(p.done)
+				return
+			}
+		}
+	}()
+
 	return p
 }
 
-func (p *peer) Update(u string) {
-	p.Lock()
-	defer p.Unlock()
-	if p.stopped {
-		// TODO: not panic here?
-		panic("peer: update a stopped peer")
-	}
-	p.u = u
-}
-
-// Send sends the data to the remote node. It is always non-blocking.
-// It may be fail to send data if it returns nil error.
-// TODO (xiangli): reasonable retry logic
-func (p *peer) Send(m raftpb.Message) error {
-	p.Lock()
-	defer p.Unlock()
-	if p.stopped {
-		return errors.New("peer: stopped")
-	}
-	if p.paused {
-		return nil
-	}
-
-	// move all the stream related stuff into stream
-	p.stream.invalidate(m.Term)
-	if shouldInitStream(m) && !p.stream.isOpen() {
-		u := p.u
-		// todo: steam open should not block.
-		p.stream.open(types.ID(m.From), p.id, p.cid, m.Term, p.tr, u, p.r)
-		p.batcher.Reset(time.Now())
-	}
-
-	var err error
-	switch {
-	case isProposal(m):
-		p.propBatcher.Batch(m)
-	case canBatch(m) && p.stream.isOpen():
-		if !p.batcher.ShouldBatch(time.Now()) {
-			err = p.send(m)
-		}
-	case canUseStream(m):
-		if ok := p.stream.write(m); !ok {
-			err = p.send(m)
-		}
-	default:
-		err = p.send(m)
-	}
-	// send out batched MsgProp if needed
-	// TODO: it is triggered by all outcoming send now, and it needs
-	// more clear solution. Either use separate goroutine to trigger it
-	// or use streaming.
-	if !p.propBatcher.IsEmpty() {
-		t := time.Now()
-		if !p.propBatcher.ShouldBatch(t) {
-			p.send(p.propBatcher.Message)
-			p.propBatcher.Reset(t)
-		}
-	}
-	return err
-}
-
-func (p *peer) send(m raftpb.Message) error {
-	// TODO: don't block. we should be able to have 1000s
-	// of messages out at a time.
+func (p *peer) Send(m raftpb.Message) {
 	select {
-	case p.q <- &m:
-		return nil
+	case p.sendc <- m:
+	case <-p.done:
+		log.Panicf("peer: unexpected stopped")
+	}
+}
+
+func (p *peer) Update(u string) {
+	select {
+	case p.newURLc <- u:
+	case <-p.done:
+		log.Panicf("peer: unexpected stopped")
+	}
+}
+
+func (p *peer) attachOutgoingConn(conn *outgoingConn) {
+	var ok bool
+	switch conn.t {
+	case streamTypeMsgApp:
+		ok = p.msgAppWriter.attach(conn)
+	case streamTypeMessage:
+		ok = p.writer.attach(conn)
 	default:
-		log.Printf("sender: dropping %s because maximal number %d of sender buffer entries to %s has been reached",
-			m.Type, senderBufSize, p.u)
-		return fmt.Errorf("reach maximal serving")
+		log.Panicf("rafthttp: unhandled stream type %s", conn.t)
 	}
-}
-
-// Stop performs any necessary finalization and terminates the peer
-// elegantly.
-func (p *peer) Stop() {
-	close(p.q)
-	p.wg.Wait()
-
-	p.Lock()
-	defer p.Unlock()
-	p.stream.stop()
-	p.stopped = true
-}
-
-func (p *peer) handle() {
-	defer p.wg.Done()
-	for m := range p.q {
-		start := time.Now()
-		err := p.post(pbutil.MustMarshal(m))
-		end := time.Now()
-
-		p.Lock()
-		if err != nil {
-			if p.errored == nil || p.errored.Error() != err.Error() {
-				log.Printf("sender: error posting to %s: %v", p.id, err)
-				p.errored = err
-			}
-			if p.active {
-				log.Printf("sender: the connection with %s became inactive", p.id)
-				p.active = false
-			}
-			if m.Type == raftpb.MsgApp {
-				p.fs.Fail()
-			}
-		} else {
-			if !p.active {
-				log.Printf("sender: the connection with %s became active", p.id)
-				p.active = true
-				p.errored = nil
-			}
-			if m.Type == raftpb.MsgApp {
-				p.fs.Succ(end.Sub(start))
-			}
-		}
-		p.Unlock()
+	if !ok {
+		conn.Close()
 	}
-}
-
-// post POSTs a data payload to a url. Returns nil if the POST succeeds,
-// error on any failure.
-func (p *peer) post(data []byte) error {
-	p.Lock()
-	req, err := http.NewRequest("POST", p.u, bytes.NewBuffer(data))
-	p.Unlock()
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/protobuf")
-	req.Header.Set("X-Etcd-Cluster-ID", p.cid.String())
-	resp, err := p.tr.RoundTrip(req)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusPreconditionFailed:
-		err := fmt.Errorf("conflicting cluster ID with the target cluster (%s != %s)", resp.Header.Get("X-Etcd-Cluster-ID"), p.cid)
-		select {
-		case p.errorc <- err:
-		default:
-		}
-		return nil
-	case http.StatusForbidden:
-		err := fmt.Errorf("the member has been permanently removed from the cluster")
-		select {
-		case p.errorc <- err:
-		default:
-		}
-		return nil
-	case http.StatusNoContent:
-		return nil
-	default:
-		return fmt.Errorf("unexpected http status %s while posting to %q", http.StatusText(resp.StatusCode), req.URL.String())
-	}
-}
-
-// attachStream attaches a streamSever to the peer.
-func (p *peer) attachStream(sw *streamWriter) error {
-	p.Lock()
-	defer p.Unlock()
-	if p.stopped {
-		return errors.New("peer: stopped")
-	}
-
-	sw.fs = p.fs
-	return p.stream.attach(sw)
 }
 
 // Pause pauses the peer. The peer will simply drops all incoming
 // messages without retruning an error.
 func (p *peer) Pause() {
-	p.Lock()
-	defer p.Unlock()
-	p.paused = true
+	select {
+	case p.pausec <- struct{}{}:
+	case <-p.done:
+	}
 }
 
 // Resume resumes a paused peer.
 func (p *peer) Resume() {
-	p.Lock()
-	defer p.Unlock()
-	p.paused = false
+	select {
+	case p.resumec <- struct{}{}:
+	case <-p.done:
+	}
 }
 
-func isProposal(m raftpb.Message) bool { return m.Type == raftpb.MsgProp }
+func (p *peer) Stop() {
+	close(p.stopc)
+	<-p.done
+}
+
+func (p *peer) pick(m raftpb.Message) (writec chan raftpb.Message, name string, size int) {
+	switch {
+	// Considering MsgSnap may have a big size, e.g., 1G, and will block
+	// stream for a long time, only use one of the N pipelines to send MsgSnap.
+	case isMsgSnap(m):
+		writec = p.pipeline.msgc
+		name, size = "pipeline", pipelineBufSize
+	case p.msgAppWriter.isWorking() && canUseMsgAppStream(m):
+		writec = p.msgAppWriter.msgc
+		name, size = "msgapp stream", streamBufSize
+	case p.writer.isWorking():
+		writec = p.writer.msgc
+		name, size = "general stream", streamBufSize
+	default:
+		writec = p.pipeline.msgc
+		name, size = "pipeline", pipelineBufSize
+	}
+	return
+}
+
+func isMsgSnap(m raftpb.Message) bool { return m.Type == raftpb.MsgSnap }

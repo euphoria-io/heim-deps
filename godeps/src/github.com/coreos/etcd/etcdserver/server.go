@@ -16,7 +16,6 @@ package etcdserver
 
 import (
 	"encoding/json"
-	"expvar"
 	"fmt"
 	"log"
 	"math/rand"
@@ -26,13 +25,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/discovery"
 	"github.com/coreos/etcd/etcdserver/etcdhttp/httptypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/etcdserver/stats"
 	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/coreos/etcd/pkg/idutil"
-	"github.com/coreos/etcd/pkg/metrics"
 	"github.com/coreos/etcd/pkg/pbutil"
 	"github.com/coreos/etcd/pkg/timeutil"
 	"github.com/coreos/etcd/pkg/types"
@@ -43,8 +42,6 @@ import (
 	"github.com/coreos/etcd/snap"
 	"github.com/coreos/etcd/store"
 	"github.com/coreos/etcd/wal"
-
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 )
 
 const (
@@ -277,7 +274,6 @@ func (s *EtcdServer) Start() {
 	s.start()
 	go s.publish(defaultPublishRetryInterval)
 	go s.purgeFile()
-	metrics.Publish("raft.status", expvar.Func(s.raftStatus))
 }
 
 // start prepares and starts server in a new goroutine. It is no longer safe to
@@ -328,6 +324,12 @@ func (s *EtcdServer) Process(ctx context.Context, m raftpb.Message) error {
 		s.stats.RecvAppendReq(types.ID(m.From).String(), m.Size())
 	}
 	return s.r.Step(ctx, m)
+}
+
+func (s *EtcdServer) ReportUnreachable(id uint64) { s.r.ReportUnreachable(id) }
+
+func (s *EtcdServer) ReportSnapshot(id uint64, status raft.SnapshotStatus) {
+	s.r.ReportSnapshot(id, status)
 }
 
 func (s *EtcdServer) run() {
@@ -436,7 +438,7 @@ func (s *EtcdServer) run() {
 
 			if appliedi-snapi > s.r.snapCount {
 				log.Printf("etcdserver: start to snapshot (applied: %d, lastsnap: %d)", appliedi, snapi)
-				s.snapshot(appliedi, &confState)
+				s.snapshot(appliedi, confState)
 				snapi = appliedi
 			}
 		case <-syncC:
@@ -491,12 +493,22 @@ func (s *EtcdServer) Do(ctx context.Context, r pb.Request) (Response, error) {
 			return Response{}, err
 		}
 		ch := s.w.Register(r.ID)
+
+		// TODO: benchmark the cost of time.Now()
+		// might be sampling?
+		start := time.Now()
 		s.r.Propose(ctx, data)
+
+		proposePending.Inc()
+		defer proposePending.Dec()
+
 		select {
 		case x := <-ch:
+			proposeDurations.Observe(float64(time.Since(start).Nanoseconds() / int64(time.Millisecond)))
 			resp := x.(Response)
 			return resp, resp.err
 		case <-ctx.Done():
+			proposeFailed.Inc()
 			s.w.Trigger(r.ID, nil) // GC wait
 			return Response{}, parseCtxErr(ctx.Err())
 		case <-s.done:
@@ -539,8 +551,6 @@ func (s *EtcdServer) LeaderStats() []byte {
 }
 
 func (s *EtcdServer) StoreStats() []byte { return s.store.JsonStats() }
-
-func (s *EtcdServer) raftStatus() interface{} { return s.r.Status() }
 
 func (s *EtcdServer) AddMember(ctx context.Context, memb Member) error {
 	// TODO: move Member to protobuf type
@@ -810,35 +820,46 @@ func (s *EtcdServer) applyConfChange(cc raftpb.ConfChange, confState *raftpb.Con
 }
 
 // TODO: non-blocking snapshot
-func (s *EtcdServer) snapshot(snapi uint64, confState *raftpb.ConfState) {
-	d, err := s.store.Save()
-	// TODO: current store will never fail to do a snapshot
-	// what should we do if the store might fail?
-	if err != nil {
-		log.Panicf("etcdserver: store save should never fail: %v", err)
-	}
-	err = s.r.raftStorage.Compact(snapi, confState, d)
-	if err != nil {
-		// the snapshot was done asynchronously with the progress of raft.
-		// raft might have already got a newer snapshot and called compact.
-		if err == raft.ErrCompacted {
-			return
-		}
-		log.Panicf("etcdserver: unexpected compaction error %v", err)
-	}
-	log.Printf("etcdserver: compacted log at index %d", snapi)
+func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
+	clone := s.store.Clone()
 
-	if err := s.r.storage.Cut(); err != nil {
-		log.Panicf("etcdserver: rotate wal file should never fail: %v", err)
-	}
-	snap, err := s.r.raftStorage.Snapshot()
-	if err != nil {
-		log.Panicf("etcdserver: snapshot error: %v", err)
-	}
-	if err := s.r.storage.SaveSnap(snap); err != nil {
-		log.Fatalf("etcdserver: save snapshot error: %v", err)
-	}
-	log.Printf("etcdserver: saved snapshot at index %d", snap.Metadata.Index)
+	go func() {
+		d, err := clone.SaveNoCopy()
+		// TODO: current store will never fail to do a snapshot
+		// what should we do if the store might fail?
+		if err != nil {
+			log.Panicf("etcdserver: store save should never fail: %v", err)
+		}
+		snap, err := s.r.raftStorage.CreateSnapshot(snapi, &confState, d)
+		if err != nil {
+			// the snapshot was done asynchronously with the progress of raft.
+			// raft might have already got a newer snapshot.
+			if err == raft.ErrSnapOutOfDate {
+				return
+			}
+			log.Panicf("etcdserver: unexpected create snapshot error %v", err)
+		}
+		if err := s.r.storage.SaveSnap(snap); err != nil {
+			log.Fatalf("etcdserver: save snapshot error: %v", err)
+		}
+		log.Printf("etcdserver: saved snapshot at index %d", snap.Metadata.Index)
+
+		// keep some in memory log entries for slow followers.
+		compacti := uint64(1)
+		if snapi > numberOfCatchUpEntries {
+			compacti = snapi - numberOfCatchUpEntries
+		}
+		err = s.r.raftStorage.Compact(compacti)
+		if err != nil {
+			// the compaction was done asynchronously with the progress of raft.
+			// raft log might already been compact.
+			if err == raft.ErrCompacted {
+				return
+			}
+			log.Panicf("etcdserver: unexpected compaction error %v", err)
+		}
+		log.Printf("etcdserver: compacted raft log at %d", compacti)
+	}()
 }
 
 func (s *EtcdServer) PauseSending() { s.r.pauseSending() }

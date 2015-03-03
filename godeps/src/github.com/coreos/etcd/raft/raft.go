@@ -53,10 +53,27 @@ func (st StateType) String() string {
 type Progress struct {
 	Match, Next uint64
 	Wait        int
+	// If the last sent to the Progress failed and reported
+	// by the link layer via MsgUnreachable, Unreachable will be set.
+	// If the Progress is unreachable, snapshot and optimistically append
+	// will be disabled.
+	// Unreachable will be unset if raft starts to receive message (msgAppResp,
+	// msgHeartbeatResp) from the remote peer of the Progress.
+	Unreachable bool
+	// If there is a pending snapshot, the pendingSnapshot will be set to the
+	// index of the snapshot. If pendingSnapshot is set, the replication process of
+	// this Progress will be paused. raft will not resend snapshot until the pending one
+	// is reported to be failed.
+	//
+	// PendingSnapshot is set when raft sends out a snapshot to this Progress.
+	// PendingSnapshot is unset when the snapshot is reported to be successfully,
+	// or raft updates an equal or higher Match for this Progress.
+	PendingSnapshot uint64
 }
 
 func (pr *Progress) update(n uint64) {
 	pr.waitReset()
+
 	if pr.Match < n {
 		pr.Match = n
 	}
@@ -71,6 +88,7 @@ func (pr *Progress) optimisticUpdate(n uint64) { pr.Next = n + 1 }
 // Otherwise it decreases the progress next index to min(rejected, last) and returns true.
 func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 	pr.waitReset()
+
 	if pr.Match != 0 {
 		// the rejection must be stale if the progress has matched and "rejected"
 		// is smaller than "match".
@@ -99,9 +117,39 @@ func (pr *Progress) waitDecr(i int) {
 		pr.Wait = 0
 	}
 }
-func (pr *Progress) waitSet(w int)    { pr.Wait = w }
-func (pr *Progress) waitReset()       { pr.Wait = 0 }
-func (pr *Progress) shouldWait() bool { return pr.Match == 0 && pr.Wait > 0 }
+func (pr *Progress) waitSet(w int)       { pr.Wait = w }
+func (pr *Progress) waitReset()          { pr.Wait = 0 }
+func (pr *Progress) isUnreachable() bool { return pr.Unreachable }
+func (pr *Progress) reachable()          { pr.Unreachable = false }
+func (pr *Progress) unreachable()        { pr.Unreachable = true }
+func (pr *Progress) shouldWait() bool    { return (pr.Unreachable || pr.Match == 0) && pr.Wait > 0 }
+
+func (pr *Progress) hasPendingSnapshot() bool    { return pr.PendingSnapshot != 0 }
+func (pr *Progress) setPendingSnapshot(i uint64) { pr.PendingSnapshot = i }
+
+// finishSnapshot unsets the pending snapshot and optimistically increase Next to
+// the index of pendingSnapshot + 1. The next replication message is expected
+// to be msgApp.
+func (pr *Progress) snapshotFinish() {
+	pr.Next = pr.PendingSnapshot + 1
+	pr.PendingSnapshot = 0
+}
+
+// snapshotFail unsets the pending snapshot. The next replication message is expected
+// to be another msgSnap.
+func (pr *Progress) snapshotFail() {
+	pr.PendingSnapshot = 0
+}
+
+// maybeSnapshotAbort unsets pendingSnapshot if Match is equal or higher than
+// the pendingSnapshot
+func (pr *Progress) maybeSnapshotAbort() bool {
+	if pr.hasPendingSnapshot() && pr.Match >= pr.PendingSnapshot {
+		pr.PendingSnapshot = 0
+		return true
+	}
+	return false
+}
 
 func (pr *Progress) String() string {
 	return fmt.Sprintf("next = %d, match = %d, wait = %v", pr.Next, pr.Match, pr.Wait)
@@ -216,12 +264,18 @@ func (r *raft) send(m pb.Message) {
 // sendAppend sends RRPC, with entries to the given peer.
 func (r *raft) sendAppend(to uint64) {
 	pr := r.prs[to]
-	if pr.shouldWait() {
+	if pr.shouldWait() || pr.hasPendingSnapshot() {
 		return
 	}
 	m := pb.Message{}
 	m.To = to
 	if r.needSnapshot(pr.Next) {
+		if pr.isUnreachable() {
+			// do not try to send snapshot until the Progress is
+			// reachable
+			return
+		}
+
 		m.Type = pb.MsgSnap
 		snapshot, err := r.raftLog.snapshot()
 		if err != nil {
@@ -234,7 +288,8 @@ func (r *raft) sendAppend(to uint64) {
 		sindex, sterm := snapshot.Metadata.Index, snapshot.Metadata.Term
 		log.Printf("raft: %x [firstindex: %d, commit: %d] sent snapshot[index: %d, term: %d] to %x [%s]",
 			r.id, r.raftLog.firstIndex(), r.Commit, sindex, sterm, to, pr)
-		pr.waitSet(r.electionTimeout)
+		pr.setPendingSnapshot(sindex)
+		log.Printf("raft: %x paused sending replication messages to %x [%s]", r.id, to, pr)
 	} else {
 		m.Type = pb.MsgApp
 		m.Index = pr.Next - 1
@@ -243,12 +298,9 @@ func (r *raft) sendAppend(to uint64) {
 		m.Commit = r.raftLog.committed
 		// optimistically increase the next if the follower
 		// has been matched.
-		if n := len(m.Entries); pr.Match != 0 && n != 0 {
+		if n := len(m.Entries); pr.Match != 0 && !pr.isUnreachable() && n != 0 {
 			pr.optimisticUpdate(m.Entries[n-1].Index)
-		} else if pr.Match == 0 {
-			// TODO (xiangli): better way to find out if the follower is in good path or not
-			// a follower might be in bad path even if match != 0, since we optimistically
-			// increase the next.
+		} else if pr.Match == 0 || pr.isUnreachable() {
 			pr.waitSet(r.heartbeatTimeout)
 		}
 	}
@@ -464,6 +516,8 @@ func (r *raft) Step(m pb.Message) error {
 type stepFunc func(r *raft, m pb.Message)
 
 func stepLeader(r *raft, m pb.Message) {
+	pr := r.prs[m.From]
+
 	switch m.Type {
 	case pb.MsgBeat:
 		r.bcastHeartbeat()
@@ -482,16 +536,23 @@ func stepLeader(r *raft, m pb.Message) {
 		r.appendEntry(m.Entries...)
 		r.bcastAppend()
 	case pb.MsgAppResp:
+		if pr.isUnreachable() {
+			pr.reachable()
+			log.Printf("raft: %x received msgAppResp from %x and changed it to be reachable [%s]", r.id, m.From, pr)
+		}
 		if m.Reject {
 			log.Printf("raft: %x received msgApp rejection(lastindex: %d) from %x for index %d",
 				r.id, m.RejectHint, m.From, m.Index)
-			if r.prs[m.From].maybeDecrTo(m.Index, m.RejectHint) {
-				log.Printf("raft: %x decreased progress of %x to [%s]", r.id, m.From, r.prs[m.From])
+			if pr.maybeDecrTo(m.Index, m.RejectHint) {
+				log.Printf("raft: %x decreased progress of %x to [%s]", r.id, m.From, pr)
 				r.sendAppend(m.From)
 			}
 		} else {
-			oldWait := r.prs[m.From].shouldWait()
-			r.prs[m.From].update(m.Index)
+			oldWait := pr.shouldWait()
+			pr.update(m.Index)
+			if r.prs[m.From].maybeSnapshotAbort() {
+				log.Printf("raft: %x snapshot aborted, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+			}
 			if r.maybeCommit() {
 				r.bcastAppend()
 			} else if oldWait {
@@ -501,13 +562,36 @@ func stepLeader(r *raft, m pb.Message) {
 			}
 		}
 	case pb.MsgHeartbeatResp:
-		if r.prs[m.From].Match < r.raftLog.lastIndex() {
+		if pr.isUnreachable() {
+			pr.reachable()
+			log.Printf("raft: %x received msgHeartbeatResp from %x and changed it to be reachable [%s]", r.id, m.From, pr)
+		}
+		if pr.Match < r.raftLog.lastIndex() {
 			r.sendAppend(m.From)
 		}
 	case pb.MsgVote:
 		log.Printf("raft: %x [logterm: %d, index: %d, vote: %x] rejected vote from %x [logterm: %d, index: %d] at term %d",
 			r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.From, m.LogTerm, m.Index, r.Term)
 		r.send(pb.Message{To: m.From, Type: pb.MsgVoteResp, Reject: true})
+	case pb.MsgSnapStatus:
+		if !pr.hasPendingSnapshot() {
+			return
+		}
+		if m.Reject {
+			pr.snapshotFail()
+			log.Printf("raft: %x snapshot failed, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+		} else {
+			pr.snapshotFinish()
+			log.Printf("raft: %x snapshot succeeded, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
+			// wait for the msgAppResp from the remote node before sending
+			// out the next msgApp
+			pr.waitSet(r.electionTimeout)
+		}
+	case pb.MsgUnreachable:
+		if !pr.isUnreachable() {
+			pr.unreachable()
+			log.Printf("raft: %x failed to send message to %x and changed it to be unreachable [%s]", r.id, m.From, pr)
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ package etcdserver
 
 import (
 	"encoding/json"
+	"expvar"
 	"log"
 	"os"
 	"sort"
@@ -30,6 +31,28 @@ import (
 	"github.com/coreos/etcd/wal"
 	"github.com/coreos/etcd/wal/walpb"
 )
+
+const (
+	// Number of entries for slow follower to catch-up after compacting
+	// the raft storage entries.
+	// We expect the follower has a millisecond level latency with the leader.
+	// The max throughput is around 10K. Keep a 5K entries is enough for helping
+	// follower to catch up.
+	numberOfCatchUpEntries = 5000
+)
+
+var (
+	// indirection for expvar func interface
+	// expvar panics when publishing duplicate name
+	// expvar does not support remove a registered name
+	// so only register a func that calls raftStatus
+	// and change raftStatus as we need.
+	raftStatus func() raft.Status
+)
+
+func init() {
+	expvar.Publish("raft.status", expvar.Func(func() interface{} { return raftStatus() }))
+}
 
 type RaftTimer interface {
 	Index() uint64
@@ -96,6 +119,7 @@ func startNode(cfg *ServerConfig, ids []types.ID) (id types.ID, n raft.Node, s *
 	log.Printf("etcdserver: start member %s in cluster %s", id, cfg.Cluster.ID())
 	s = raft.NewMemoryStorage()
 	n = raft.StartNode(uint64(id), peers, cfg.ElectionTicks, 1, s)
+	raftStatus = n.Status
 	return
 }
 
@@ -115,6 +139,7 @@ func restartNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, raft.N
 	s.SetHardState(st)
 	s.Append(ents)
 	n := raft.RestartNode(uint64(id), cfg.ElectionTicks, 1, s, 0)
+	raftStatus = n.Status
 	return id, n, s, w
 }
 
@@ -156,6 +181,7 @@ func restartAsStandaloneNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (type
 	s.SetHardState(st)
 	s.Append(ents)
 	n := raft.RestartNode(uint64(id), cfg.ElectionTicks, 1, s, 0)
+	raftStatus = n.Status
 	return id, n, s, w
 }
 
