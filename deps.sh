@@ -43,7 +43,7 @@ update_go_deps() {
   mkdir -p godeps/src go/src
   cp -r $HEIMDIR go/src
 
-  GOPATH=`pwd`/godeps:`pwd`/go go get -d -t heim/...
+  GOPATH=`pwd`/godeps:`pwd`/go go get -d -t euphoria.io/heim/...
 
   # pin go-etcd to v0.4.6 (until coreos upgrades to etcd 2.0)
   git --git-dir=godeps/src/github.com/coreos/go-etcd/.git \
