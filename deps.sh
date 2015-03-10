@@ -40,8 +40,8 @@ print_js_versions() {
 
 update_go_deps() {
   rm -rf godeps
-  mkdir -p godeps/src go/src
-  cp -r $HEIMDIR go/src
+  mkdir -p godeps/src go/src/euphoria.io
+  cp -r $HEIMDIR go/src/euphoria.io
 
   GOPATH=`pwd`/godeps:`pwd`/go go get -d -t euphoria.io/heim/...
 

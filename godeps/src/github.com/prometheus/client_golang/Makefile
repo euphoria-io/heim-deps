@@ -20,7 +20,7 @@ MAC_OS_X_VERSION ?= 10.8
 
 BUILD_PATH = $(PWD)/.build
 
-export GO_VERSION = 1.4
+export GO_VERSION = 1.4.2
 export GOOS       = $(subst Darwin,darwin,$(subst Linux,linux,$(subst FreeBSD,freebsd,$(OS))))
 
 ifeq ($(GOOS),darwin)
@@ -73,7 +73,7 @@ build: source_path dependencies
 	$(GO) build ./...
 
 dependencies: source_path $(GOCC)
-	$(GO) get -d -t ./...
+	cp -a $(CURDIR)/Godeps/_workspace/src/* $(GOPATH)/src
 
 example_random: source_path dependencies examples/random/main.go
 	$(GO) build -o example_random examples/random/main.go
@@ -91,7 +91,7 @@ advice: test
 	$(GO) vet ./...
 
 format:
-	find . -iname '*.go' | grep -vE '^./(.build|_vendor)/' | xargs -n1 -P1 $(GOFMT) -w -s=true
+	find . -iname '*.go' | grep -vE '^./(.build|Godeps)/' | xargs -n1 -P1 $(GOFMT) -w -s=true
 
 tag:
 	git tag $(VERSION)

@@ -26,11 +26,37 @@ import (
 )
 
 const (
-	DialTimeout      = time.Second
+	DialTimeout = time.Second
+	// ConnRead/WriteTimeout is the i/o timeout set on each connection rafthttp pkg creates.
+	// A 5 seconds timeout is good enough for recycling bad connections. Or we have to wait for
+	// tcp keepalive failing to detect a bad connection, which is at minutes level.
+	// For long term streaming connections, rafthttp pkg sends application level linkHeartbeat
+	// to keep the connection alive.
+	// For short term pipeline connections, the connection MUST be killed to avoid it being
+	// put back to http pkg connection pool.
 	ConnReadTimeout  = 5 * time.Second
 	ConnWriteTimeout = 5 * time.Second
 
 	recvBufSize = 4096
+	// maxPendingProposals holds the proposals during one leader election process.
+	// Generally one leader election takes at most 1 sec. It should have
+	// 0-2 election conflicts, and each one takes 0.5 sec.
+	// We assume the number of concurrent proposers is smaller than 4096.
+	// One client blocks on its proposal for at least 1 sec, so 4096 is enough
+	// to hold all proposals.
+	maxPendingProposals = 4096
+
+	streamApp   = "streamMsgApp"
+	streamMsg   = "streamMsg"
+	pipelineMsg = "pipeline"
+)
+
+var (
+	bufSizeMap = map[string]int{
+		streamApp:   streamBufSize,
+		streamMsg:   streamBufSize,
+		pipelineMsg: pipelineBufSize,
+	}
 )
 
 type Peer interface {
@@ -40,7 +66,7 @@ type Peer interface {
 	// raft.
 	Send(m raftpb.Message)
 	// Update updates the urls of remote peer.
-	Update(u string)
+	Update(urls types.URLs)
 	// attachOutgoingConn attachs the outgoing connection to the peer for
 	// stream usage. After the call, the ownership of the outgoing
 	// connection hands over to the peer. The peer will close the connection
@@ -63,15 +89,18 @@ type Peer interface {
 // A pipeline is a series of http clients that send http requests to the remote.
 // It is only used when the stream has not been established.
 type peer struct {
+	// id of the remote raft peer node
 	id types.ID
 
 	msgAppWriter *streamWriter
 	writer       *streamWriter
 	pipeline     *pipeline
 
-	sendc   chan raftpb.Message
-	recvc   chan raftpb.Message
-	newURLc chan string
+	sendc    chan raftpb.Message
+	recvc    chan raftpb.Message
+	propc    chan raftpb.Message
+	newURLsC chan types.URLs
+
 	// for testing
 	pausec  chan struct{}
 	resumec chan struct{}
@@ -80,36 +109,55 @@ type peer struct {
 	done  chan struct{}
 }
 
-func startPeer(tr http.RoundTripper, u string, local, to, cid types.ID, r Raft, fs *stats.FollowerStats, errorc chan error) *peer {
+func startPeer(tr http.RoundTripper, urls types.URLs, local, to, cid types.ID, r Raft, fs *stats.FollowerStats, errorc chan error) *peer {
+	picker := newURLPicker(urls)
 	p := &peer{
 		id:           to,
 		msgAppWriter: startStreamWriter(fs, r),
 		writer:       startStreamWriter(fs, r),
-		pipeline:     newPipeline(tr, u, to, cid, fs, r, errorc),
+		pipeline:     newPipeline(tr, picker, to, cid, fs, r, errorc),
 		sendc:        make(chan raftpb.Message),
 		recvc:        make(chan raftpb.Message, recvBufSize),
-		newURLc:      make(chan string),
+		propc:        make(chan raftpb.Message, maxPendingProposals),
+		newURLsC:     make(chan types.URLs),
 		pausec:       make(chan struct{}),
 		resumec:      make(chan struct{}),
 		stopc:        make(chan struct{}),
 		done:         make(chan struct{}),
 	}
+
+	// Use go-routine for process of MsgProp because it is
+	// blocking when there is no leader.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for {
+			select {
+			case mm := <-p.propc:
+				if err := r.Process(ctx, mm); err != nil {
+					log.Printf("peer: process raft message error: %v", err)
+				}
+			case <-p.stopc:
+				return
+			}
+		}
+	}()
+
 	go func() {
 		var paused bool
-		msgAppReader := startStreamReader(tr, u, streamTypeMsgApp, local, to, cid, p.recvc)
-		reader := startStreamReader(tr, u, streamTypeMessage, local, to, cid, p.recvc)
+		msgAppReader := startStreamReader(tr, picker, streamTypeMsgApp, local, to, cid, p.recvc, p.propc)
+		reader := startStreamReader(tr, picker, streamTypeMessage, local, to, cid, p.recvc, p.propc)
 		for {
 			select {
 			case m := <-p.sendc:
 				if paused {
 					continue
 				}
-				writec, name, size := p.pick(m)
+				writec, name := p.pick(m)
 				select {
 				case writec <- m:
 				default:
 					log.Printf("peer: dropping %s to %s since %s with %d-size buffer is blocked",
-						m.Type, p.id, name, size)
+						m.Type, p.id, name, bufSizeMap[name])
 				}
 			case mm := <-p.recvc:
 				if mm.Type == raftpb.MsgApp {
@@ -118,15 +166,14 @@ func startPeer(tr http.RoundTripper, u string, local, to, cid types.ID, r Raft, 
 				if err := r.Process(context.TODO(), mm); err != nil {
 					log.Printf("peer: process raft message error: %v", err)
 				}
-			case u := <-p.newURLc:
-				msgAppReader.update(u)
-				reader.update(u)
-				p.pipeline.update(u)
+			case urls := <-p.newURLsC:
+				picker.update(urls)
 			case <-p.pausec:
 				paused = true
 			case <-p.resumec:
 				paused = false
 			case <-p.stopc:
+				cancel()
 				p.msgAppWriter.stop()
 				p.writer.stop()
 				p.pipeline.stop()
@@ -149,9 +196,9 @@ func (p *peer) Send(m raftpb.Message) {
 	}
 }
 
-func (p *peer) Update(u string) {
+func (p *peer) Update(urls types.URLs) {
 	select {
-	case p.newURLc <- u:
+	case p.newURLsC <- urls:
 	case <-p.done:
 		log.Panicf("peer: unexpected stopped")
 	}
@@ -194,22 +241,20 @@ func (p *peer) Stop() {
 	<-p.done
 }
 
-func (p *peer) pick(m raftpb.Message) (writec chan raftpb.Message, name string, size int) {
+// pick picks a chan for sending the given message. The picked chan and the picked chan
+// string name are returned.
+func (p *peer) pick(m raftpb.Message) (writec chan raftpb.Message, picked string) {
 	switch {
 	// Considering MsgSnap may have a big size, e.g., 1G, and will block
 	// stream for a long time, only use one of the N pipelines to send MsgSnap.
 	case isMsgSnap(m):
-		writec = p.pipeline.msgc
-		name, size = "pipeline", pipelineBufSize
+		return p.pipeline.msgc, pipelineMsg
 	case p.msgAppWriter.isWorking() && canUseMsgAppStream(m):
-		writec = p.msgAppWriter.msgc
-		name, size = "msgapp stream", streamBufSize
+		return p.msgAppWriter.msgc, streamApp
 	case p.writer.isWorking():
-		writec = p.writer.msgc
-		name, size = "general stream", streamBufSize
+		return p.writer.msgc, streamMsg
 	default:
-		writec = p.pipeline.msgc
-		name, size = "pipeline", pipelineBufSize
+		return p.pipeline.msgc, pipelineMsg
 	}
 	return
 }

@@ -24,10 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/pkg/pbutil"
 	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 )
 
@@ -320,14 +318,6 @@ type errReader struct{}
 
 func (er *errReader) Read(_ []byte) (int, error) { return 0, errors.New("some error") }
 
-type fakeRaft struct {
-	err error
-}
-
-func (p *fakeRaft) Process(ctx context.Context, m raftpb.Message) error  { return p.err }
-func (p *fakeRaft) ReportUnreachable(id uint64)                          {}
-func (p *fakeRaft) ReportSnapshot(id uint64, status raft.SnapshotStatus) {}
-
 type resWriterToError struct {
 	code int
 }
@@ -343,7 +333,7 @@ func (pg *fakePeerGetter) Get(id types.ID) Peer { return pg.peers[id] }
 
 type fakePeer struct {
 	msgs  []raftpb.Message
-	u     string
+	urls  types.URLs
 	connc chan *outgoingConn
 }
 
@@ -354,6 +344,6 @@ func newFakePeer() *fakePeer {
 }
 
 func (pr *fakePeer) Send(m raftpb.Message)                 { pr.msgs = append(pr.msgs, m) }
-func (pr *fakePeer) Update(u string)                       { pr.u = u }
+func (pr *fakePeer) Update(urls types.URLs)                { pr.urls = urls }
 func (pr *fakePeer) attachOutgoingConn(conn *outgoingConn) { pr.connc <- conn }
 func (pr *fakePeer) Stop()                                 {}

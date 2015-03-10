@@ -17,8 +17,6 @@ package rafthttp
 import (
 	"log"
 	"net/http"
-	"net/url"
-	"path"
 	"sync"
 
 	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
@@ -35,12 +33,32 @@ type Raft interface {
 }
 
 type Transporter interface {
+	// Handler returns the HTTP handler of the transporter.
+	// A transporter HTTP handler handles the HTTP requests
+	// from remote peers.
+	// The handler MUST be used to handle RaftPrefix(/raft)
+	// endpoint.
 	Handler() http.Handler
+	// Send sends out the given messages to the remote peers.
+	// Each message has a To field, which is an id that maps
+	// to an existing peer in the transport.
+	// If the id cannot be found in the transport, the message
+	// will be ignored.
 	Send(m []raftpb.Message)
+	// AddPeer adds a peer with given peer urls into the transport.
+	// It is the caller's responsibility to ensure the urls are all vaild,
+	// or it panics.
+	// Peer urls are used to connect to the remote peer.
 	AddPeer(id types.ID, urls []string)
+	// RemovePeer removes the peer with given id.
 	RemovePeer(id types.ID)
+	// RemoveAllPeers removes all the existing peers in the transport.
 	RemoveAllPeers()
+	// UpdatePeer updates the peer urls of the peer with the given id.
+	// It is the caller's responsibility to ensure the urls are all vaild,
+	// or it panics.
 	UpdatePeer(id types.ID, urls []string)
+	// Stop closes the connections and stops the transporter.
 	Stop()
 }
 
@@ -115,21 +133,18 @@ func (t *transport) Stop() {
 	}
 }
 
-func (t *transport) AddPeer(id types.ID, urls []string) {
+func (t *transport) AddPeer(id types.ID, us []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, ok := t.peers[id]; ok {
 		return
 	}
-	// TODO: considering how to switch between all available peer urls
-	peerURL := urls[0]
-	u, err := url.Parse(peerURL)
+	urls, err := types.NewURLs(us)
 	if err != nil {
-		log.Panicf("unexpect peer url %s", peerURL)
+		log.Panicf("newURLs %+v should never fail: %+v", us, err)
 	}
-	u.Path = path.Join(u.Path, RaftPrefix)
 	fs := t.leaderStats.Follower(id.String())
-	t.peers[id] = startPeer(t.roundTripper, u.String(), t.id, id, t.clusterID, t.raft, fs, t.errorc)
+	t.peers[id] = startPeer(t.roundTripper, urls, t.id, id, t.clusterID, t.raft, fs, t.errorc)
 }
 
 func (t *transport) RemovePeer(id types.ID) {
@@ -157,20 +172,18 @@ func (t *transport) removePeer(id types.ID) {
 	delete(t.leaderStats.Followers, id.String())
 }
 
-func (t *transport) UpdatePeer(id types.ID, urls []string) {
+func (t *transport) UpdatePeer(id types.ID, us []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// TODO: return error or just panic?
 	if _, ok := t.peers[id]; !ok {
 		return
 	}
-	peerURL := urls[0]
-	u, err := url.Parse(peerURL)
+	urls, err := types.NewURLs(us)
 	if err != nil {
-		log.Panicf("unexpect peer url %s", peerURL)
+		log.Panicf("newURLs %+v should never fail: %+v", us, err)
 	}
-	u.Path = path.Join(u.Path, RaftPrefix)
-	t.peers[id].Update(u.String())
+	t.peers[id].Update(urls)
 }
 
 type Pausable interface {
