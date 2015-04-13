@@ -5,7 +5,7 @@ serve as an audit log for third-party software used by our servers.
 
 ## Setting up deps for development
 
-Heim's fig.yml is set up to use deps stored in `deps/godeps` and
+Heim's docker-compose.yml is set up to use deps stored in `deps/godeps` and
 `deps/node_modules`. To link those paths to a heim-deps repo:
 
     ./deps.sh link ./path/to/heim/repo
