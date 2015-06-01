@@ -1,0 +1,6 @@
+/gopath
+/go-bindata
+/machine*
+/bin
+.vagrant
+*.etcd
