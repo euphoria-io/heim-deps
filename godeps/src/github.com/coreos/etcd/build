@@ -1,18 +1,18 @@
-#!/bin/sh -e
+#!/bin/bash -e
 
-if [ ! -h gopath/src/github.com/coreos/etcd ]; then
-	mkdir -p gopath/src/github.com/coreos/
-	ln -s ../../../.. gopath/src/github.com/coreos/etcd
-fi
+ORG_PATH="github.com/coreos"
+REPO_PATH="${ORG_PATH}/etcd"
 
-export GOBIN=${PWD}/bin
 export GOPATH=${PWD}/gopath
-export GOFMTPATH="./bench ./config ./discovery ./etcd ./error ./http ./log main.go ./metrics ./mod ./server ./store ./tests"
 
-# Don't surprise user by formatting their codes by stealth
-if [ "--fmt" = "$1" ]; then
-	gofmt -s -w -l $GOFMTPATH
-fi
+rm -f $GOPATH/src/${REPO_PATH}
+mkdir -p $GOPATH/src/${ORG_PATH}
+ln -s ${PWD} $GOPATH/src/${REPO_PATH}
 
-go install github.com/coreos/etcd
-go install github.com/coreos/etcd/bench
+eval $(go env)
+
+GIT_SHA=`git rev-parse --short HEAD`
+
+# Static compilation is useful when etcd is run in a container
+CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags "-s -X ${REPO_PATH}/version.GitSHA ${GIT_SHA}" -o bin/etcd ${REPO_PATH}
+CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags "-s" -o bin/etcdctl ${REPO_PATH}/etcdctl

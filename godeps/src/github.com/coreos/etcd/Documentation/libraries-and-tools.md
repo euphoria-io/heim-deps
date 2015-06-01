@@ -3,8 +3,12 @@
 **Tools**
 
 - [etcdctl](https://github.com/coreos/etcdctl) - A command line client for etcd
+- [etcd-backup](https://github.com/fanhattan/etcd-backup) - A powerful command line utility for dumping/restoring etcd - Supports v2
 - [etcd-dump](https://npmjs.org/package/etcd-dump) - Command line utility for dumping/restoring etcd.
 - [etcd-fs](https://github.com/xetorthio/etcd-fs) - FUSE filesystem for etcd
+- [etcd-browser](https://github.com/henszey/etcd-browser) - A web-based key/value editor for etcd using AngularJS
+- [etcd-lock](https://github.com/datawisesystems/etcd-lock) - Master election & distributed r/w lock implementation using etcd - Supports v2
+- [etcd-console](https://github.com/matishsiao/etcd-console) - A web-base key/value editor for etcd using PHP
 
 **Go libraries**
 
@@ -12,19 +16,24 @@
 
 **Java libraries**
 
+- [boonproject/etcd](https://github.com/boonproject/boon/blob/master/etcd/README.md) - Supports v2, Async/Sync and waits
 - [justinsb/jetcd](https://github.com/justinsb/jetcd)
 - [diwakergupta/jetcd](https://github.com/diwakergupta/jetcd) - Supports v2
+- [jurmous/etcd4j](https://github.com/jurmous/etcd4j) - Supports v2, Async/Sync, waits and SSL
+- [AdoHe/etcd4j](http://github.com/AdoHe/etcd4j) - Supports v2 (enhance for real production cluster)
 
 **Python libraries**
 
 - [jplana/python-etcd](https://github.com/jplana/python-etcd) - Supports v2
 - [russellhaering/txetcd](https://github.com/russellhaering/txetcd) - a Twisted Python library
 - [cholcombe973/autodock](https://github.com/cholcombe973/autodock) - A docker deployment automation tool
+- [lisael/aioetcd](https://github.com/lisael/aioetcd) - (Python 3.4+) Asyncio coroutines client (Supports v2)
 
 **Node libraries**
 
 - [stianeikeland/node-etcd](https://github.com/stianeikeland/node-etcd) - Supports v2 (w Coffeescript)
 - [lavagetto/nodejs-etcd](https://github.com/lavagetto/nodejs-etcd) - Supports v2
+- [deedubs/node-etcd-config](https://github.com/deedubs/node-etcd-config) - Supports v2
 
 **Ruby libraries**
 
@@ -35,6 +44,9 @@
 **C libraries**
 
 - [jdarcy/etcd-api](https://github.com/jdarcy/etcd-api) - Supports v2
+
+**C++ libraries**
+- [edwardcapriolo/etcdcpp](https://github.com/edwardcapriolo/etcdcpp) - Supports v2
 
 **Clojure libraries**
 
@@ -57,6 +69,14 @@
 **Haskell libraries**
 
 - [wereHamster/etcd-hs](https://github.com/wereHamster/etcd-hs)
+
+**R libraries**
+
+- [ropensci/etseed](https://github.com/ropensci/etseed)
+
+**Tcl libraries**
+
+- [efrecon/etcd-tcl](https://github.com/efrecon/etcd-tcl) - Supports v2, except wait.
 
 A detailed recap of client functionalities can be found in the [clients compatibility matrix][clients-matrix.md].
 
@@ -92,3 +112,7 @@ A detailed recap of client functionalities can be found in the [clients compatib
 - [GoogleCloudPlatform/kubernetes](https://github.com/GoogleCloudPlatform/kubernetes) - Container cluster manager.
 - [mailgun/vulcand](https://github.com/mailgun/vulcand) - HTTP proxy that uses etcd as a configuration backend.
 - [duedil-ltd/discodns](https://github.com/duedil-ltd/discodns) - Simple DNS nameserver using etcd as a database for names and records.
+- [skynetservices/skydns](https://github.com/skynetservices/skydns) - RFC compliant DNS server
+- [xordataexchange/crypt](https://github.com/xordataexchange/crypt) - Securely store values in etcd using GPG encryption
+- [spf13/viper](https://github.com/spf13/viper) - Go configuration library, reads values from ENV, pflags, files, and etcd with optional encryption
+- [lytics/metafora](https://github.com/lytics/metafora) - Go distributed task library
