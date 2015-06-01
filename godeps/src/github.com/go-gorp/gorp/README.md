@@ -143,10 +143,10 @@ func main() {
 
 type Post struct {
     // db tag lets you specify the column name if it differs from the struct field
-    Id      int64 `db:"post_id"`
+    Id      int64  `db:"post_id"`
     Created int64
-    Title   string
-    Body    string
+    Title   string `db:",size:50"`               // Column size set to 50
+    Body    string `db:"article_body,size:1024"` // Set both column name and size
 }
 
 func newPost(title, body string) Post {
@@ -620,6 +620,11 @@ The following is portable:
 err := dbmap.SelectOne(&val, "select * from foo where id = :id", 
    map[string]interface{} { "id": 30})
 ```
+
+Additionally, when using Postgres as your database, you should utilize `$1` instead 
+of `?` placeholders as utilizing `?` placeholders when querying Postgres will result 
+in `pq: operator does not exist` errors. Alternatively, use 
+`dbMap.Dialect.BindVar(varIdx)` to get the proper variable binding for your dialect.
 
 ### time.Time and time zones
 

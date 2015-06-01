@@ -2,49 +2,104 @@
 
 [![GoDoc](http://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/awslabs/aws-sdk-go)
 [![Build Status](https://img.shields.io/travis/awslabs/aws-sdk-go.svg)](https://travis-ci.org/awslabs/aws-sdk-go)
-[![Apache V2 License](http://img.shields.io/badge/license-Apache%20V2-blue.svg)](https://github.com/awslabs/aws-sdk-go/blob/master/LICENSE)
+[![Apache V2 License](http://img.shields.io/badge/license-Apache%20V2-blue.svg)](https://github.com/awslabs/aws-sdk-go/blob/master/LICENSE.txt)
 
-The AWS SDK for Go is a set of clients for all Amazon Web Services APIs
-that initially started as
-[Stripe's aws-go](https://github.com/awslabs/aws-sdk-go/tree/50f5f12927d77de6ec71a7473fe1f1081734d908)
-library, and is currently under development to implement full
-service coverage and other standard AWS SDK features.
-
-**Note**: Active development is currently happening in the
-[develop](https://github.com/awslabs/aws-sdk-go/tree/develop) branch.
-See this branch to follow along with API changes and ongoing refactors.
-The `master` branch will continue to maintain the current API of
-Stripe's aws-go library until the develop branch is more stable.
+aws-sdk-go is the official AWS SDK for the Go programming language.
 
 ## Caution
 
-It is currently **highly untested**, so please be patient and report any
-bugs or problems you experience. The APIs may change radically without
-much warning, so please vendor your dependencies w/ Godep or similar.
+The SDK is currently in the process of being developed, and not everything
+may be working fully yet. Please be patient and report any bugs or problems
+you experience. The APIs may change radically without much warning, so please
+vendor your dependencies with Godep or similar.
 
 Please do not confuse this for a stable, feature-complete library.
 
-Note that many services are currently not fully implemented. Some operations
-might work, but not all, especially for XML-based services. We are currently
-working to build out better service support, please bear with us!
+Note that while most AWS protocols are currently supported, not all services
+available in this package are implemented fully, as some require extra
+customizations to work with the SDK. If you've encountered such a scenario,
+please open a [GitHub issue](https://github.com/awslabs/aws-sdk-go/issues)
+so we can track work for the service.
 
 ## Installing
 
-Let's say you want to use EC2:
+Install your specific service package with the following `go get` command.
+For example, EC2 support might be installed with:
 
-    $ go get github.com/awslabs/aws-sdk-go/gen/ec2
+    $ go get github.com/awslabs/aws-sdk-go/service/ec2
+
+You can also install the entire SDK by installing the root package:
+
+    $ go get github.com/awslabs/aws-sdk-go
+
+## Configuring Credentials
+
+Before using the SDK, ensure that you've configured credentials. The best
+way to configure credentials on a development machine is to use the
+`~/.aws/credentials` file, which might look like:
+
+```
+[default]
+aws_access_key_id = AKID1234567890
+aws_secret_access_key = MY-SECRET-KEY
+```
+
+You can learn more about the credentials file from this
+[blog post](http://blogs.aws.amazon.com/security/post/Tx3D6U6WSFGOK2H/A-New-and-Standardized-Way-to-Manage-Credentials-in-the-AWS-SDKs).
+
+Alternatively, you can set the following environment variables:
+
+```
+AWS_ACCESS_KEY_ID=AKID1234567890
+AWS_SECRET_ACCESS_KEY=MY-SECRET-KEY
+```
 
 ## Using
 
-```go
-import "github.com/awslabs/aws-sdk-go/aws"
-import "github.com/awslabs/aws-sdk-go/gen/ec2"
+To use a service in the SDK, create a service variable by calling the `New()`
+function. Once you have a service, you can call API operations which each
+return response data and a possible error.
 
-creds := aws.Creds(accessKey, secretKey, "")
-cli := ec2.New(creds, "us-west-2", nil)
-resp, err := cli.DescribeInstances(nil)
-if err != nil {
-    panic(err)
+To list a set of instance IDs from EC2, you could run:
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/awslabs/aws-sdk-go/aws"
+	"github.com/awslabs/aws-sdk-go/service/ec2"
+)
+
+func main() {
+	// Create an EC2 service object in the "us-west-2" region
+	// Note that you can also configure your region globally by
+	// exporting the AWS_REGION environment variable
+	svc := ec2.New(&aws.Config{Region: "us-west-2"})
+
+	// Call the DescribeInstances Operation
+	resp, err := svc.DescribeInstances(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	// resp has all of the response data, pull out instance IDs:
+	fmt.Println("> Number of reservation sets: ", len(resp.Reservations))
+	for idx, res := range resp.Reservations {
+		fmt.Println("  > Number of instances: ", len(res.Instances))
+		for _, inst := range resp.Reservations[idx].Instances {
+			fmt.Println("    - Instance ID: ", *inst.InstanceID)
+		}
+	}
 }
-fmt.Println(resp.Reservations)
 ```
+
+You can find more information and operations in our
+[API documentation](http://godoc.org/github.com/awslabs/aws-sdk-go).
+
+## License
+
+This SDK is distributed under the
+[Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0),
+see LICENSE.txt and NOTICE.txt for more information.

@@ -1,3 +1,41 @@
+## 0.6.0 / 2015-06-01
+* [CHANGE] Rename process_goroutines to go_goroutines.
+* [ENHANCEMENT] Validate label names during YAML decoding.
+* [ENHANCEMENT] Add LabelName regular expression.
+* [BUGFIX] Ensure alignment of struct members for 32-bit systems.
+
+## 0.5.0 / 2015-05-06
+* [BUGFIX] Removed a weakness in the fingerprinting aka signature code.
+  This makes fingerprinting slower and more allocation-heavy, but the
+  weakness was too severe to be tolerated.
+* [CHANGE] As a result of the above, Metric.Fingerprint is now returning
+  a different fingerprint. To keep the same fingerprint, the new method
+  Metric.FastFingerprint was introduced, which will be used by the
+  Prometheus server for storage purposes (implying that a collision
+  detection has to be added, too).
+* [ENHANCEMENT] The Metric.Equal and Metric.Before do not depend on
+  fingerprinting anymore, removing the possibility of an undetected
+  fingerprint collision.
+* [FEATURE] The Go collector in the exposition library includes garbage
+  collection stats.
+* [FEATURE] The exposition library allows to create constant "throw-away"
+  summaries and histograms.
+* [CHANGE] A number of new reserved labels and prefixes.
+
+## 0.4.0 / 2015-04-08
+* [CHANGE] Return NaN when Summaries have no observations yet.
+* [BUGFIX] Properly handle Summary decay upon Write().
+* [BUGFIX] Fix the documentation link to the consumption library.
+* [FEATURE] Allow the metric family injection hook to merge with existing
+  metric families.
+* [ENHANCEMENT] Removed cgo dependency and conditional compilation of procfs.
+* [MAINTENANCE] Adjusted to changes in matttproud/golang_protobuf_extensions.
+
+## 0.3.2 / 2015-03-11
+* [BUGFIX] Fixed the receiver type of COWMetric.Set(). This method is
+  only used by the Prometheus server internally.
+* [CLEANUP] Added licenses of vendored code left out by godep.
+
 ## 0.3.1 / 2015-03-04
 * [ENHANCEMENT] Switched fingerprinting functions from own free list to
   sync.Pool.

@@ -2,6 +2,7 @@ package pq
 
 import (
 	"bytes"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -460,7 +461,7 @@ func TestByteaOutputFormats(t *testing.T) {
 		return
 	}
 
-	testByteaOutputFormat := func(f string) {
+	testByteaOutputFormat := func(f string, usePrepared bool) {
 		expectedData := []byte("\x5c\x78\x00\xff\x61\x62\x63\x01\x08")
 		sqlQuery := "SELECT decode('5c7800ff6162630108', 'hex')"
 
@@ -477,8 +478,18 @@ func TestByteaOutputFormats(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// use Query; QueryRow would hide the actual error
-		rows, err := txn.Query(sqlQuery)
+		var rows *sql.Rows
+		var stmt *sql.Stmt
+		if usePrepared {
+			stmt, err = txn.Prepare(sqlQuery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err = stmt.Query()
+		} else {
+			// use Query; QueryRow would hide the actual error
+			rows, err = txn.Query(sqlQuery)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -496,13 +507,21 @@ func TestByteaOutputFormats(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if stmt != nil {
+			err = stmt.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		if !bytes.Equal(data, expectedData) {
 			t.Errorf("unexpected bytea value %v for format %s; expected %v", data, f, expectedData)
 		}
 	}
 
-	testByteaOutputFormat("hex")
-	testByteaOutputFormat("escape")
+	testByteaOutputFormat("hex", false)
+	testByteaOutputFormat("escape", false)
+	testByteaOutputFormat("hex", true)
+	testByteaOutputFormat("escape", true)
 }
 
 func TestAppendEncodedText(t *testing.T) {
@@ -510,15 +529,13 @@ func TestAppendEncodedText(t *testing.T) {
 
 	buf = appendEncodedText(&parameterStatus{serverVersion: 90000}, buf, int64(10))
 	buf = append(buf, '\t')
-	buf = appendEncodedText(&parameterStatus{serverVersion: 90000}, buf, float32(42.0000000001))
-	buf = append(buf, '\t')
 	buf = appendEncodedText(&parameterStatus{serverVersion: 90000}, buf, 42.0000000001)
 	buf = append(buf, '\t')
 	buf = appendEncodedText(&parameterStatus{serverVersion: 90000}, buf, "hello\tworld")
 	buf = append(buf, '\t')
 	buf = appendEncodedText(&parameterStatus{serverVersion: 90000}, buf, []byte{0, 128, 255})
 
-	if string(buf) != "10\t42\t42.0000000001\thello\\tworld\t\\\\x0080ff" {
+	if string(buf) != "10\t42.0000000001\thello\\tworld\t\\\\x0080ff" {
 		t.Fatal(string(buf))
 	}
 }

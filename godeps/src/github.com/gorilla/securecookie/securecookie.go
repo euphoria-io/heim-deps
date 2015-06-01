@@ -255,7 +255,7 @@ func createMac(h hash.Hash, value []byte) []byte {
 // verifyMac verifies that a message authentication code (MAC) is valid.
 func verifyMac(h hash.Hash, value []byte, mac []byte) error {
 	mac2 := createMac(h, value)
-	if len(mac) == len(mac2) && subtle.ConstantTimeCompare(mac, mac2) == 1 {
+	if subtle.ConstantTimeCompare(mac, mac2) == 1 {
 		return nil
 	}
 	return ErrMacInvalid
@@ -375,11 +375,11 @@ func EncodeMulti(name string, value interface{}, codecs ...Codec) (string, error
 
 	var errors MultiError
 	for _, codec := range codecs {
-		if encoded, err := codec.Encode(name, value); err == nil {
+		encoded, err := codec.Encode(name, value)
+		if err == nil {
 			return encoded, nil
-		} else {
-			errors = append(errors, err)
 		}
+		errors = append(errors, err)
 	}
 	return "", errors
 }
@@ -395,11 +395,11 @@ func DecodeMulti(name string, value string, dst interface{}, codecs ...Codec) er
 
 	var errors MultiError
 	for _, codec := range codecs {
-		if err := codec.Decode(name, value, dst); err == nil {
+		err := codec.Decode(name, value, dst)
+		if err == nil {
 			return nil
-		} else {
-			errors = append(errors, err)
 		}
+		errors = append(errors, err)
 	}
 	return errors
 }

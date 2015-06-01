@@ -202,7 +202,7 @@ func (d PostgresDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr boo
 		return d.ToSqlType(val.Elem(), maxsize, isAutoIncr)
 	case reflect.Bool:
 		return "boolean"
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint8, reflect.Uint16, reflect.Uint32:
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32:
 		if isAutoIncr {
 			return "serial"
 		}
@@ -275,12 +275,16 @@ func (d PostgresDialect) InsertAutoIncrToTarget(exec SqlExecutor, insertSql stri
 	}
 	defer rows.Close()
 
-	if rows.Next() {
-		err := rows.Scan(target)
+	if !rows.Next() {
+		return fmt.Errorf("No serial value returned for insert: %s Encountered error: %s", insertSql, rows.Err())
+	}
+	if err := rows.Scan(target); err != nil {
 		return err
 	}
-
-	return errors.New("No serial value returned for insert: " + insertSql + " Encountered error: " + rows.Err().Error())
+	if rows.Next() {
+		return fmt.Errorf("more than two serial value returned for insert: %s", insertSql)
+	}
+	return rows.Err()
 }
 
 func (d PostgresDialect) QuoteField(f string) string {
@@ -446,10 +450,13 @@ func (d MySQLDialect) IfTableNotExists(command, schema, table string) string {
 ////////////////
 
 // Implementation of Dialect for Microsoft SQL Server databases.
-// Tested on SQL Server 2008 with driver: github.com/denisenkom/go-mssqldb
+// Use gorp.SqlServerDialect{"2005"} for legacy datatypes.
+// Tested with driver: github.com/denisenkom/go-mssqldb
 
 type SqlServerDialect struct {
-	suffix string
+
+	// If set to "2005" legacy datatypes will be used
+	Version string
 }
 
 func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool) string {
@@ -473,9 +480,9 @@ func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bo
 	case reflect.Int64:
 		return "bigint"
 	case reflect.Uint64:
-		return "bigint"
+		return "numeric(20,0)"
 	case reflect.Float32:
-		return "real"
+		return "float(24)"
 	case reflect.Float64:
 		return "float(53)"
 	case reflect.Slice:
@@ -490,15 +497,22 @@ func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bo
 	case "NullFloat64":
 		return "float(53)"
 	case "NullBool":
-		return "tinyint"
-	case "Time":
-		return "datetime"
+		return "bit"
+	case "NullTime", "Time":
+		if d.Version == "2005" {
+			return "datetime"
+		}
+		return "datetime2"
 	}
 
 	if maxsize < 1 {
-		maxsize = 255
+		if d.Version == "2005" {
+			maxsize = 255
+		} else {
+			return fmt.Sprintf("nvarchar(max)")
+		}
 	}
-	return fmt.Sprintf("varchar(%d)", maxsize)
+	return fmt.Sprintf("nvarchar(%d)", maxsize)
 }
 
 // Returns auto_increment
@@ -515,14 +529,10 @@ func (d SqlServerDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 	return ""
 }
 
-// Returns suffix
-func (d SqlServerDialect) CreateTableSuffix() string {
-
-	return d.suffix
-}
+func (d SqlServerDialect) CreateTableSuffix() string { return ";" }
 
 func (d SqlServerDialect) TruncateClause() string {
-	return "delete from"
+	return "truncate table"
 }
 
 // Returns "?"
@@ -535,38 +545,38 @@ func (d SqlServerDialect) InsertAutoIncr(exec SqlExecutor, insertSql string, par
 }
 
 func (d SqlServerDialect) QuoteField(f string) string {
-	return `"` + f + `"`
+	return "[" + strings.Replace(f, "]", "]]", -1) + "]"
 }
 
 func (d SqlServerDialect) QuotedTableForQuery(schema string, table string) string {
 	if strings.TrimSpace(schema) == "" {
-		return table
+		return d.QuoteField(table)
 	}
-	return schema + "." + table
+	return d.QuoteField(schema) + "." + d.QuoteField(table)
 }
 
 func (d SqlServerDialect) QuerySuffix() string { return ";" }
 
 func (d SqlServerDialect) IfSchemaNotExists(command, schema string) string {
-	s := fmt.Sprintf("if not exists (select name from sys.schemas where name = '%s') %s", schema, command)
+	s := fmt.Sprintf("if schema_id(N'%s') is null %s", schema, command)
 	return s
 }
 
 func (d SqlServerDialect) IfTableExists(command, schema, table string) string {
 	var schema_clause string
 	if strings.TrimSpace(schema) != "" {
-		schema_clause = fmt.Sprintf("table_schema = '%s' and ", schema)
+		schema_clause = fmt.Sprintf("%s.", d.QuoteField(schema))
 	}
-	s := fmt.Sprintf("if exists (select * from information_schema.tables where %stable_name = '%s') %s", schema_clause, table, command)
+	s := fmt.Sprintf("if object_id('%s%s') is not null %s", schema_clause, d.QuoteField(table), command)
 	return s
 }
 
 func (d SqlServerDialect) IfTableNotExists(command, schema, table string) string {
 	var schema_clause string
 	if strings.TrimSpace(schema) != "" {
-		schema_clause = fmt.Sprintf("table_schema = '%s' and ", schema)
+		schema_clause = fmt.Sprintf("%s.", schema)
 	}
-	s := fmt.Sprintf("if not exists (select * from information_schema.tables where %stable_name = '%s') %s", schema_clause, table, command)
+	s := fmt.Sprintf("if object_id('%s%s') is null %s", schema_clause, table, command)
 	return s
 }
 
@@ -585,7 +595,7 @@ func (d OracleDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool)
 		return d.ToSqlType(val.Elem(), maxsize, isAutoIncr)
 	case reflect.Bool:
 		return "boolean"
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint8, reflect.Uint16, reflect.Uint32:
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32:
 		if isAutoIncr {
 			return "serial"
 		}

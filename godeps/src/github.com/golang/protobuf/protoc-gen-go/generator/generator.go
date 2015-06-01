@@ -379,16 +379,21 @@ func (ms *messageSymbol) GenerateAlias(g *Generator, pkg string) {
 
 }
 
-type enumSymbol string
+type enumSymbol struct {
+	name   string
+	proto3 bool // Whether this came from a proto3 file.
+}
 
 func (es enumSymbol) GenerateAlias(g *Generator, pkg string) {
-	s := string(es)
+	s := es.name
 	g.P("type ", s, " ", pkg, ".", s)
 	g.P("var ", s, "_name = ", pkg, ".", s, "_name")
 	g.P("var ", s, "_value = ", pkg, ".", s, "_value")
-	g.P("func (x ", s, ") Enum() *", s, "{ return (*", s, ")((", pkg, ".", s, ")(x).Enum()) }")
 	g.P("func (x ", s, ") String() string { return (", pkg, ".", s, ")(x).String() }")
-	g.P("func (x *", s, ") UnmarshalJSON(data []byte) error { return (*", pkg, ".", s, ")(x).UnmarshalJSON(data) }")
+	if !es.proto3 {
+		g.P("func (x ", s, ") Enum() *", s, "{ return (*", s, ")((", pkg, ".", s, ")(x).Enum()) }")
+		g.P("func (x *", s, ") UnmarshalJSON(data []byte) error { return (*", pkg, ".", s, ")(x).UnmarshalJSON(data) }")
+	}
 }
 
 type constOrVarSymbol struct {
@@ -1156,26 +1161,25 @@ func (g *Generator) generateImports() {
 			continue
 		}
 		filename := goFileName(s)
+		// By default, import path is the dirname of the Go filename.
+		importPath := path.Dir(filename)
 		if substitution, ok := g.ImportMap[s]; ok {
-			filename = substitution
+			importPath = substitution
 		}
-		filename = g.ImportPrefix + filename
-		if strings.HasSuffix(filename, ".go") {
-			filename = filename[0 : len(filename)-3]
-		}
+		importPath = g.ImportPrefix + importPath
 		// Skip weak imports.
 		if g.weak(int32(i)) {
-			g.P("// skipping weak import ", fd.PackageName(), " ", strconv.Quote(filename))
+			g.P("// skipping weak import ", fd.PackageName(), " ", strconv.Quote(importPath))
 			continue
 		}
 		if _, ok := g.usedPackages[fd.PackageName()]; ok {
-			g.P("import ", fd.PackageName(), " ", strconv.Quote(filename))
+			g.P("import ", fd.PackageName(), " ", strconv.Quote(importPath))
 		} else {
 			// TODO: Re-enable this when we are more feature-complete.
 			// For instance, some protos use foreign field extensions, which we don't support.
 			// Until then, this is just annoying spam.
 			//log.Printf("protoc-gen-go: discarding unused import from %v: %v", *g.file.Name, s)
-			g.P("// discarding unused import ", fd.PackageName(), " ", strconv.Quote(filename))
+			g.P("// discarding unused import ", fd.PackageName(), " ", strconv.Quote(importPath))
 		}
 	}
 	g.P()
@@ -1228,7 +1232,7 @@ func (g *Generator) generateEnum(enum *EnumDescriptor) {
 
 	g.PrintComments(enum.path)
 	g.P("type ", ccTypeName, " int32")
-	g.file.addExport(enum, enumSymbol(ccTypeName))
+	g.file.addExport(enum, enumSymbol{ccTypeName, enum.proto3()})
 	g.P("const (")
 	g.In()
 	for i, e := range enum.Value {
@@ -1550,8 +1554,13 @@ func (g *Generator) generateMessage(message *Descriptor) {
 				keyTag, valTag := g.goTag(d, keyField, keyWire), g.goTag(d, valField, valWire)
 
 				// We don't use stars, except for message-typed values.
+				// Message and enum types are the only two possibly foreign types used in maps,
+				// so record their use. They are not permitted as map keys.
 				keyType = strings.TrimPrefix(keyType, "*")
 				switch *valField.Type {
+				case descriptor.FieldDescriptorProto_TYPE_ENUM:
+					valType = strings.TrimPrefix(valType, "*")
+					g.RecordTypeUse(valField.GetTypeName())
 				case descriptor.FieldDescriptorProto_TYPE_MESSAGE:
 					g.RecordTypeUse(valField.GetTypeName())
 				default:
