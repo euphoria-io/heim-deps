@@ -51,7 +51,10 @@ update_go_deps() {
       checkout 6aa2da5
 
   # save the commit hash of deps but remove the git metadata so we don't create submodules.
-  find godeps -depth -name .git -type d -execdir sh -c "git rev-parse HEAD > git-HEAD; rm -rf .git" \;
+  find godeps -depth -name .git -type d -execdir sh -c "git rev-parse HEAD > git-HEAD && rm -rf .git" \;
+
+  # and likewise for hg repos
+  find godeps -depth -name .hg -type d -execdir sh -c "hg parent -T '{node}\n' > hg-HEAD && rm -rf .hg" \;
 
   rm -rf go
 }
