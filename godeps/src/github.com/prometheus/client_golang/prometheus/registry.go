@@ -38,7 +38,6 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/prometheus/client_golang/model"
 	"github.com/prometheus/client_golang/text"
 )
 
@@ -169,6 +168,11 @@ func Unregister(c Collector) bool {
 // returned protobufs at all. If collect-checks are enabled, type and uniqueness
 // checks are performed, but no further consistency checks (which would require
 // knowledge of a metric descriptor).
+//
+// Sorting concerns: The caller is responsible for sorting the label pairs in
+// each metric. However, the order of metrics will be sorted by the registry as
+// it is required anyway after merging with the metric families collected
+// conventionally.
 //
 // The function must be callable at any time and concurrently.
 func SetMetricFamilyInjectionHook(hook func() []*dto.MetricFamily) {
@@ -520,10 +524,11 @@ func (r *registry) checkConsistency(metricFamily *dto.MetricFamily, dtoMetric *d
 	if metricFamily.GetType() == dto.MetricType_GAUGE && dtoMetric.Gauge == nil ||
 		metricFamily.GetType() == dto.MetricType_COUNTER && dtoMetric.Counter == nil ||
 		metricFamily.GetType() == dto.MetricType_SUMMARY && dtoMetric.Summary == nil ||
+		metricFamily.GetType() == dto.MetricType_HISTOGRAM && dtoMetric.Histogram == nil ||
 		metricFamily.GetType() == dto.MetricType_UNTYPED && dtoMetric.Untyped == nil {
 		return fmt.Errorf(
-			"collected metric %q is not a %s",
-			dtoMetric, metricFamily.Type,
+			"collected metric %s %s is not a %s",
+			metricFamily.GetName(), dtoMetric, metricFamily.GetType(),
 		)
 	}
 
@@ -531,19 +536,24 @@ func (r *registry) checkConsistency(metricFamily *dto.MetricFamily, dtoMetric *d
 	h := fnv.New64a()
 	var buf bytes.Buffer
 	buf.WriteString(metricFamily.GetName())
-	buf.WriteByte(model.SeparatorByte)
+	buf.WriteByte(separatorByte)
 	h.Write(buf.Bytes())
+	// Make sure label pairs are sorted. We depend on it for the consistency
+	// check. Label pairs must be sorted by contract. But the point of this
+	// method is to check for contract violations. So we better do the sort
+	// now.
+	sort.Sort(LabelPairSorter(dtoMetric.Label))
 	for _, lp := range dtoMetric.Label {
 		buf.Reset()
 		buf.WriteString(lp.GetValue())
-		buf.WriteByte(model.SeparatorByte)
+		buf.WriteByte(separatorByte)
 		h.Write(buf.Bytes())
 	}
 	metricHash := h.Sum64()
 	if _, exists := metricHashes[metricHash]; exists {
 		return fmt.Errorf(
-			"collected metric %q was collected before with the same name and label values",
-			dtoMetric,
+			"collected metric %s %s was collected before with the same name and label values",
+			metricFamily.GetName(), dtoMetric,
 		)
 	}
 	metricHashes[metricHash] = struct{}{}
@@ -555,14 +565,14 @@ func (r *registry) checkConsistency(metricFamily *dto.MetricFamily, dtoMetric *d
 	// Desc consistency with metric family.
 	if metricFamily.GetName() != desc.fqName {
 		return fmt.Errorf(
-			"collected metric %q has name %q but should have %q",
-			dtoMetric, metricFamily.GetName(), desc.fqName,
+			"collected metric %s %s has name %q but should have %q",
+			metricFamily.GetName(), dtoMetric, metricFamily.GetName(), desc.fqName,
 		)
 	}
 	if metricFamily.GetHelp() != desc.help {
 		return fmt.Errorf(
-			"collected metric %q has help %q but should have %q",
-			dtoMetric, metricFamily.GetHelp(), desc.help,
+			"collected metric %s %s has help %q but should have %q",
+			metricFamily.GetName(), dtoMetric, metricFamily.GetHelp(), desc.help,
 		)
 	}
 
@@ -576,8 +586,8 @@ func (r *registry) checkConsistency(metricFamily *dto.MetricFamily, dtoMetric *d
 	}
 	if len(lpsFromDesc) != len(dtoMetric.Label) {
 		return fmt.Errorf(
-			"labels in collected metric %q are inconsistent with descriptor %s",
-			dtoMetric, desc,
+			"labels in collected metric %s %s are inconsistent with descriptor %s",
+			metricFamily.GetName(), dtoMetric, desc,
 		)
 	}
 	sort.Sort(LabelPairSorter(lpsFromDesc))
@@ -586,8 +596,8 @@ func (r *registry) checkConsistency(metricFamily *dto.MetricFamily, dtoMetric *d
 		if lpFromDesc.GetName() != lpFromMetric.GetName() ||
 			lpFromDesc.Value != nil && lpFromDesc.GetValue() != lpFromMetric.GetValue() {
 			return fmt.Errorf(
-				"labels in collected metric %q are inconsistent with descriptor %s",
-				dtoMetric, desc,
+				"labels in collected metric %s %s are inconsistent with descriptor %s",
+				metricFamily.GetName(), dtoMetric, desc,
 			)
 		}
 	}
@@ -597,7 +607,10 @@ func (r *registry) checkConsistency(metricFamily *dto.MetricFamily, dtoMetric *d
 
 	// Is the desc registered?
 	if _, exist := r.descIDs[desc.id]; !exist {
-		return fmt.Errorf("collected metric %q with unregistered descriptor %s", dtoMetric, desc)
+		return fmt.Errorf(
+			"collected metric %s %s with unregistered descriptor %s",
+			metricFamily.GetName(), dtoMetric, desc,
+		)
 	}
 
 	return nil

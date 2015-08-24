@@ -228,6 +228,20 @@ func Marshal(pb Message) ([]byte, error) {
 	return p.buf, err
 }
 
+// EncodeMessage writes the protocol buffer to the Buffer,
+// prefixed by a varint-encoded length.
+func (p *Buffer) EncodeMessage(pb Message) error {
+	t, base, err := getbase(pb)
+	if structPointer_IsNil(base) {
+		return ErrNil
+	}
+	if err == nil {
+		var state errorState
+		err = p.enc_len_struct(GetProperties(t.Elem()), base, &state)
+	}
+	return err
+}
+
 // Marshal takes the protocol buffer
 // and encodes it into the wire format, writing the result to the
 // Buffer.
@@ -529,7 +543,7 @@ func (o *Buffer) enc_struct_message(p *Properties, base structPointer) error {
 		}
 		o.buf = append(o.buf, p.tagcode...)
 		o.EncodeRawBytes(data)
-		return nil
+		return state.err
 	}
 
 	o.buf = append(o.buf, p.tagcode...)
@@ -1084,7 +1098,7 @@ func (o *Buffer) enc_new_map(p *Properties, base structPointer) error {
 			repeated MapFieldEntry map_field = N;
 	*/
 
-	v := structPointer_Map(base, p.field, p.mtype).Elem() // map[K]V
+	v := structPointer_NewAt(base, p.field, p.mtype).Elem() // map[K]V
 	if v.Len() == 0 {
 		return nil
 	}
@@ -1123,7 +1137,7 @@ func (o *Buffer) enc_new_map(p *Properties, base structPointer) error {
 }
 
 func size_new_map(p *Properties, base structPointer) int {
-	v := structPointer_Map(base, p.field, p.mtype).Elem() // map[K]V
+	v := structPointer_NewAt(base, p.field, p.mtype).Elem() // map[K]V
 
 	keycopy, valcopy, keybase, valbase := mapEncodeScratch(p.mtype)
 
@@ -1201,6 +1215,14 @@ func (o *Buffer) enc_struct(prop *StructProperties, base structPointer) error {
 		}
 	}
 
+	// Do oneof fields.
+	if prop.oneofMarshaler != nil {
+		m := structPointer_Interface(base, prop.stype).(Message)
+		if err := prop.oneofMarshaler(m, o); err != nil {
+			return err
+		}
+	}
+
 	// Add unrecognized fields at the end.
 	if prop.unrecField.IsValid() {
 		v := *structPointer_Bytes(base, prop.unrecField)
@@ -1224,6 +1246,27 @@ func size_struct(prop *StructProperties, base structPointer) (n int) {
 	if prop.unrecField.IsValid() {
 		v := *structPointer_Bytes(base, prop.unrecField)
 		n += len(v)
+	}
+
+	// Factor in any oneof fields.
+	// TODO: This could be faster and use less reflection.
+	if prop.oneofMarshaler != nil {
+		sv := reflect.ValueOf(structPointer_Interface(base, prop.stype)).Elem()
+		for i := 0; i < prop.stype.NumField(); i++ {
+			fv := sv.Field(i)
+			if fv.Kind() != reflect.Interface || fv.IsNil() {
+				continue
+			}
+			if prop.stype.Field(i).Tag.Get("protobuf_oneof") == "" {
+				continue
+			}
+			spv := fv.Elem()         // interface -> *T
+			sv := spv.Elem()         // *T -> T
+			sf := sv.Type().Field(0) // StructField inside T
+			var prop Properties
+			prop.Init(sf.Type, "whatever", sf.Tag.Get("protobuf"), &sf)
+			n += prop.size(&prop, toStructPointer(spv))
+		}
 	}
 
 	return
