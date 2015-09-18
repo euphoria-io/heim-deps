@@ -1,13 +1,7 @@
 #!/bin/bash
 abspath() { cd $(dirname $1); echo $(pwd)/$(basename $1); }
 
-usage="USAGE: $0 (link|update) <heim-dir>"
-
-link_deps() {
-  mkdir -p $HEIMDIR/deps
-  ln -s $SRCDIR/node_modules $HEIMDIR/deps/node_modules
-  ln -s $SRCDIR/godeps $HEIMDIR/deps/godeps
-}
+usage="USAGE: $0 (update) <heim-dir>"
 
 update_js_deps() {
   cp $HEIMDIR/client/package.json ./
@@ -76,9 +70,6 @@ cd $SRCDIR
 set -x
 
 case $1 in
-  link)
-    link_deps
-    ;;
   update-go)
     update_go_deps
     print_go_versions

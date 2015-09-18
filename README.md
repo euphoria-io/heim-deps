@@ -6,9 +6,11 @@ serve as an audit log for third-party software used by our servers.
 ## Setting up deps for development
 
 Heim's docker-compose.yml is set up to use deps stored in `deps/godeps` and
-`deps/node_modules`. To link those paths to a heim-deps repo:
+`deps/node_modules`. This repository is included in the heim repo as a git
+submodule named `_deps` (prefixed with an underscore so `go test` will not
+traverse it). To ensure that the submodule is up to date, run:
 
-    ./deps.sh link ./path/to/heim/repo
+    git submodule update --init
 
 ## Adding new deps / updating
 
