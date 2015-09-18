@@ -1,7 +1,7 @@
 #!/bin/bash
 abspath() { cd $(dirname $1); echo $(pwd)/$(basename $1); }
 
-usage="USAGE: $0 (update) <heim-dir>"
+usage="USAGE: $0 (update|update-go|update-js|compact-js) <heim-dir>"
 
 update_js_deps() {
   cp $HEIMDIR/client/package.json ./
