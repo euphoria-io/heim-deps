@@ -31,6 +31,8 @@ member flags:
 		human-readable name for this member.
 	--data-dir '${name}.etcd'
 		path to the data directory.
+	--wal-dir ''
+		path to the dedicated wal directory.
 	--snapshot-count '10000'
 		number of committed transactions to trigger a snapshot to disk.
 	--heartbeat-interval '100'
@@ -66,7 +68,8 @@ clustering flags:
 		HTTP proxy to use for traffic to discovery service.
 	--discovery-srv ''
 		dns srv domain used to bootstrap the cluster.
-
+	--strict-reconfig-check
+		reject reconfiguration requests that would cause quorum loss.
 
 proxy flags:
 
@@ -112,7 +115,7 @@ logging flags
 	--debug 'false'
 		enable debug-level logging for etcd.
 	--log-package-levels ''
-		set individual packages to various log levels (eg: 'etcdmain=CRITICAL,etcdserver=DEBUG')
+		specify a particular log level for each etcd package (eg: 'etcdmain=CRITICAL,etcdserver=DEBUG').
 
 unsafe flags:
 
@@ -126,6 +129,8 @@ given by the consensus protocol.
 experimental flags:
 
 	--experimental-v3demo 'false'
-		enable experimental v3 demo API
+		enable experimental v3 demo API.
+	--experimental-gRPC-addr '127.0.0.1:2378'
+		gRPC address for experimental v3 demo API.
 `
 )

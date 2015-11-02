@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudfront"
 )
 
@@ -15,7 +16,7 @@ var _ time.Duration
 var _ bytes.Buffer
 
 func ExampleCloudFront_CreateCloudFrontOriginAccessIdentity() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.CreateCloudFrontOriginAccessIdentityInput{
 		CloudFrontOriginAccessIdentityConfig: &cloudfront.OriginAccessIdentityConfig{ // Required
@@ -37,7 +38,7 @@ func ExampleCloudFront_CreateCloudFrontOriginAccessIdentity() {
 }
 
 func ExampleCloudFront_CreateDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.CreateDistributionInput{
 		DistributionConfig: &cloudfront.DistributionConfig{ // Required
@@ -213,6 +214,7 @@ func ExampleCloudFront_CreateDistribution() {
 				MinimumProtocolVersion:       aws.String("MinimumProtocolVersion"),
 				SSLSupportMethod:             aws.String("SSLSupportMethod"),
 			},
+			WebACLId: aws.String("string"),
 		},
 	}
 	resp, err := svc.CreateDistribution(params)
@@ -229,7 +231,7 @@ func ExampleCloudFront_CreateDistribution() {
 }
 
 func ExampleCloudFront_CreateInvalidation() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.CreateInvalidationInput{
 		DistributionId: aws.String("string"), // Required
@@ -258,7 +260,7 @@ func ExampleCloudFront_CreateInvalidation() {
 }
 
 func ExampleCloudFront_CreateStreamingDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.CreateStreamingDistributionInput{
 		StreamingDistributionConfig: &cloudfront.StreamingDistributionConfig{ // Required
@@ -306,7 +308,7 @@ func ExampleCloudFront_CreateStreamingDistribution() {
 }
 
 func ExampleCloudFront_DeleteCloudFrontOriginAccessIdentity() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.DeleteCloudFrontOriginAccessIdentityInput{
 		Id:      aws.String("string"), // Required
@@ -326,7 +328,7 @@ func ExampleCloudFront_DeleteCloudFrontOriginAccessIdentity() {
 }
 
 func ExampleCloudFront_DeleteDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.DeleteDistributionInput{
 		Id:      aws.String("string"), // Required
@@ -346,7 +348,7 @@ func ExampleCloudFront_DeleteDistribution() {
 }
 
 func ExampleCloudFront_DeleteStreamingDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.DeleteStreamingDistributionInput{
 		Id:      aws.String("string"), // Required
@@ -366,7 +368,7 @@ func ExampleCloudFront_DeleteStreamingDistribution() {
 }
 
 func ExampleCloudFront_GetCloudFrontOriginAccessIdentity() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetCloudFrontOriginAccessIdentityInput{
 		Id: aws.String("string"), // Required
@@ -385,7 +387,7 @@ func ExampleCloudFront_GetCloudFrontOriginAccessIdentity() {
 }
 
 func ExampleCloudFront_GetCloudFrontOriginAccessIdentityConfig() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetCloudFrontOriginAccessIdentityConfigInput{
 		Id: aws.String("string"), // Required
@@ -404,7 +406,7 @@ func ExampleCloudFront_GetCloudFrontOriginAccessIdentityConfig() {
 }
 
 func ExampleCloudFront_GetDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetDistributionInput{
 		Id: aws.String("string"), // Required
@@ -423,7 +425,7 @@ func ExampleCloudFront_GetDistribution() {
 }
 
 func ExampleCloudFront_GetDistributionConfig() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetDistributionConfigInput{
 		Id: aws.String("string"), // Required
@@ -442,7 +444,7 @@ func ExampleCloudFront_GetDistributionConfig() {
 }
 
 func ExampleCloudFront_GetInvalidation() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetInvalidationInput{
 		DistributionId: aws.String("string"), // Required
@@ -462,7 +464,7 @@ func ExampleCloudFront_GetInvalidation() {
 }
 
 func ExampleCloudFront_GetStreamingDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetStreamingDistributionInput{
 		Id: aws.String("string"), // Required
@@ -481,7 +483,7 @@ func ExampleCloudFront_GetStreamingDistribution() {
 }
 
 func ExampleCloudFront_GetStreamingDistributionConfig() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.GetStreamingDistributionConfigInput{
 		Id: aws.String("string"), // Required
@@ -500,7 +502,7 @@ func ExampleCloudFront_GetStreamingDistributionConfig() {
 }
 
 func ExampleCloudFront_ListCloudFrontOriginAccessIdentities() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.ListCloudFrontOriginAccessIdentitiesInput{
 		Marker:   aws.String("string"),
@@ -520,7 +522,7 @@ func ExampleCloudFront_ListCloudFrontOriginAccessIdentities() {
 }
 
 func ExampleCloudFront_ListDistributions() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.ListDistributionsInput{
 		Marker:   aws.String("string"),
@@ -539,8 +541,29 @@ func ExampleCloudFront_ListDistributions() {
 	fmt.Println(resp)
 }
 
+func ExampleCloudFront_ListDistributionsByWebACLId() {
+	svc := cloudfront.New(session.New())
+
+	params := &cloudfront.ListDistributionsByWebACLIdInput{
+		WebACLId: aws.String("string"), // Required
+		Marker:   aws.String("string"),
+		MaxItems: aws.Int64(1),
+	}
+	resp, err := svc.ListDistributionsByWebACLId(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
 func ExampleCloudFront_ListInvalidations() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.ListInvalidationsInput{
 		DistributionId: aws.String("string"), // Required
@@ -561,7 +584,7 @@ func ExampleCloudFront_ListInvalidations() {
 }
 
 func ExampleCloudFront_ListStreamingDistributions() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.ListStreamingDistributionsInput{
 		Marker:   aws.String("string"),
@@ -581,7 +604,7 @@ func ExampleCloudFront_ListStreamingDistributions() {
 }
 
 func ExampleCloudFront_UpdateCloudFrontOriginAccessIdentity() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.UpdateCloudFrontOriginAccessIdentityInput{
 		CloudFrontOriginAccessIdentityConfig: &cloudfront.OriginAccessIdentityConfig{ // Required
@@ -605,7 +628,7 @@ func ExampleCloudFront_UpdateCloudFrontOriginAccessIdentity() {
 }
 
 func ExampleCloudFront_UpdateDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.UpdateDistributionInput{
 		DistributionConfig: &cloudfront.DistributionConfig{ // Required
@@ -781,6 +804,7 @@ func ExampleCloudFront_UpdateDistribution() {
 				MinimumProtocolVersion:       aws.String("MinimumProtocolVersion"),
 				SSLSupportMethod:             aws.String("SSLSupportMethod"),
 			},
+			WebACLId: aws.String("string"),
 		},
 		Id:      aws.String("string"), // Required
 		IfMatch: aws.String("string"),
@@ -799,7 +823,7 @@ func ExampleCloudFront_UpdateDistribution() {
 }
 
 func ExampleCloudFront_UpdateStreamingDistribution() {
-	svc := cloudfront.New(nil)
+	svc := cloudfront.New(session.New())
 
 	params := &cloudfront.UpdateStreamingDistributionInput{
 		Id: aws.String("string"), // Required

@@ -16,8 +16,10 @@ package etcdserver
 
 import (
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -38,6 +40,7 @@ import (
 	"github.com/coreos/etcd/pkg/pbutil"
 	"github.com/coreos/etcd/pkg/runtime"
 	"github.com/coreos/etcd/pkg/timeutil"
+	"github.com/coreos/etcd/pkg/transport"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/pkg/wait"
 	"github.com/coreos/etcd/raft"
@@ -61,6 +64,8 @@ const (
 
 	purgeFileInterval      = 30 * time.Second
 	monitorVersionInterval = 5 * time.Second
+
+	databaseFilename = "db"
 )
 
 var (
@@ -116,7 +121,7 @@ type Server interface {
 	// ErrIDNotFound if member ID is not in the cluster.
 	RemoveMember(ctx context.Context, id uint64) error
 
-	// UpdateMember attempts to update a existing member in the cluster. It will
+	// UpdateMember attempts to update an existing member in the cluster. It will
 	// return ErrIDNotFound if the member ID does not exist.
 	UpdateMember(ctx context.Context, updateMemb Member) error
 
@@ -156,14 +161,19 @@ type EtcdServer struct {
 	cluster *cluster
 
 	store store.Store
-	kv    dstorage.KV
+	kv    dstorage.ConsistentWatchableKV
 
 	stats  *stats.ServerStats
 	lstats *stats.LeaderStats
 
 	SyncTicker <-chan time.Time
 
-	reqIDGen *idutil.Generator
+	// consistent index used to hold the offset of current executing entry
+	// It is initialized to 0 before executing any entry.
+	consistIndex consistentIndex
+	// versionTr used to send requests for peer version
+	versionTr *http.Transport
+	reqIDGen  *idutil.Generator
 
 	// forceVersionC is used to force the version monitor loop
 	// to detect the cluster version immediately.
@@ -176,9 +186,13 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 	st := store.New(StoreClusterPrefix, StoreKeysPrefix)
 	var w *wal.WAL
 	var n raft.Node
-	var s *raft.MemoryStorage
+	var s *raftStorage
 	var id types.ID
 	var cl *cluster
+
+	if !cfg.V3demo && fileutil.Exist(path.Join(cfg.StorageDir(), databaseFilename)) {
+		return nil, errors.New("experimental-v3demo cannot be disabled once it is enabled")
+	}
 
 	// Run the migrations.
 	dataVer, err := version.DetectDataDir(cfg.DataDir)
@@ -189,9 +203,18 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 		return nil, err
 	}
 
+	err = os.MkdirAll(cfg.MemberDir(), privateDirMode)
+	if err != nil && err != os.ErrExist {
+		return nil, err
+	}
+
 	haveWAL := wal.Exist(cfg.WALDir())
 	ss := snap.New(cfg.SnapDir())
 
+	pt, err := transport.NewTransport(cfg.PeerTLSInfo, cfg.peerDialTimeout())
+	if err != nil {
+		return nil, err
+	}
 	var remotes []*Member
 	switch {
 	case !haveWAL && !cfg.NewCluster:
@@ -202,14 +225,14 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 		if err != nil {
 			return nil, err
 		}
-		existingCluster, err := GetClusterFromRemotePeers(getRemotePeerURLs(cl, cfg.Name), cfg.Transport)
+		existingCluster, err := GetClusterFromRemotePeers(getRemotePeerURLs(cl, cfg.Name), pt)
 		if err != nil {
 			return nil, fmt.Errorf("cannot fetch cluster info from peer urls: %v", err)
 		}
 		if err := ValidateClusterAndAssignIDs(cl, existingCluster); err != nil {
 			return nil, fmt.Errorf("error validating peerURLs %s: %v", existingCluster, err)
 		}
-		if !isCompatibleWithCluster(cl, cl.MemberByName(cfg.Name).ID, cfg.Transport) {
+		if !isCompatibleWithCluster(cl, cl.MemberByName(cfg.Name).ID, pt) {
 			return nil, fmt.Errorf("incomptible with current running cluster")
 		}
 
@@ -227,13 +250,15 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 			return nil, err
 		}
 		m := cl.MemberByName(cfg.Name)
-		if isMemberBootstrapped(cl, cfg.Name, cfg.Transport) {
+		if isMemberBootstrapped(cl, cfg.Name, pt) {
 			return nil, fmt.Errorf("member %s has already been bootstrapped", m.ID)
 		}
 		if cfg.ShouldDiscover() {
-			str, err := discovery.JoinCluster(cfg.DiscoveryURL, cfg.DiscoveryProxy, m.ID, cfg.InitialPeerURLsMap.String())
+			var str string
+			var err error
+			str, err = discovery.JoinCluster(cfg.DiscoveryURL, cfg.DiscoveryProxy, m.ID, cfg.InitialPeerURLsMap.String())
 			if err != nil {
-				return nil, err
+				return nil, &discoveryError{op: "join", err: err}
 			}
 			urlsmap, err := types.NewURLsMap(str)
 			if err != nil {
@@ -258,10 +283,16 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 			return nil, fmt.Errorf("cannot write to member directory: %v", err)
 		}
 
+		if err := fileutil.IsDirWriteable(cfg.WALDir()); err != nil {
+			return nil, fmt.Errorf("cannot write to WAL directory: %v", err)
+		}
+
 		if cfg.ShouldDiscover() {
 			plog.Warningf("discovery token ignored since a cluster has already been initialized. Valid log found at %q", cfg.WALDir())
 		}
-		snapshot, err := ss.Load()
+		var snapshot *raftpb.Snapshot
+		var err error
+		snapshot, err = ss.Load()
 		if err != nil && err != snap.ErrNoSnapshot {
 			return nil, err
 		}
@@ -272,9 +303,6 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 			plog.Infof("recovered store from snapshot at index %d", snapshot.Metadata.Index)
 		}
 		cfg.Print()
-		if snapshot != nil {
-			plog.Infof("loaded cluster information from store: %s", cl)
-		}
 		if !cfg.ForceNewCluster {
 			id, cl, n, s, w = restartNode(cfg, snapshot)
 		} else {
@@ -310,19 +338,39 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 		stats:         sstats,
 		lstats:        lstats,
 		SyncTicker:    time.Tick(500 * time.Millisecond),
+		versionTr:     pt,
 		reqIDGen:      idutil.NewGenerator(uint8(id), time.Now()),
 		forceVersionC: make(chan struct{}),
 	}
 
 	if cfg.V3demo {
-		srv.kv = dstorage.New(path.Join(cfg.DataDir, "member", "v3demo"))
-	} else {
-		// we do not care about the error of the removal
-		os.RemoveAll(path.Join(cfg.DataDir, "member", "v3demo"))
+		err = os.MkdirAll(cfg.StorageDir(), privateDirMode)
+		if err != nil && err != os.ErrExist {
+			return nil, err
+		}
+		srv.kv = dstorage.New(path.Join(cfg.StorageDir(), databaseFilename), &srv.consistIndex)
+		if err := srv.kv.Restore(); err != nil {
+			plog.Fatalf("v3 storage restore error: %v", err)
+		}
+		s.snapStore = newSnapshotStore(cfg.StorageDir(), srv.kv)
 	}
 
 	// TODO: move transport initialization near the definition of remote
-	tr := rafthttp.NewTransporter(cfg.Transport, id, cl.ID(), srv, srv.errorc, sstats, lstats)
+	tr := &rafthttp.Transport{
+		TLSInfo:     cfg.PeerTLSInfo,
+		DialTimeout: cfg.peerDialTimeout(),
+		ID:          id,
+		ClusterID:   cl.ID(),
+		Raft:        srv,
+		SnapSaver:   s.snapStore,
+		ServerStats: sstats,
+		LeaderStats: lstats,
+		ErrorC:      srv.errorc,
+		V3demo:      cfg.V3demo,
+	}
+	if err := tr.Start(); err != nil {
+		return nil, err
+	}
 	// add all remotes into transport
 	for _, m := range remotes {
 		if m.ID != id {
@@ -335,6 +383,11 @@ func NewServer(cfg *ServerConfig) (*EtcdServer, error) {
 		}
 	}
 	srv.r.transport = tr
+
+	if cfg.V3demo {
+		s.snapStore.tr = tr
+	}
+
 	return srv, nil
 }
 
@@ -409,8 +462,13 @@ func (s *EtcdServer) IsIDRemoved(id uint64) bool { return s.cluster.IsIDRemoved(
 
 func (s *EtcdServer) ReportUnreachable(id uint64) { s.r.ReportUnreachable(id) }
 
+// ReportSnapshot reports snapshot sent status to the raft state machine,
+// and clears the used snapshot from the snapshot store.
 func (s *EtcdServer) ReportSnapshot(id uint64, status raft.SnapshotStatus) {
 	s.r.ReportSnapshot(id, status)
+	if s.cfg.V3demo {
+		s.r.raftStorage.snapStore.clearUsedSnap()
+	}
 }
 
 func (s *EtcdServer) run() {
@@ -438,6 +496,23 @@ func (s *EtcdServer) run() {
 						apply.snapshot.Metadata.Index, appliedi)
 				}
 
+				if s.cfg.V3demo {
+					if err := s.kv.Close(); err != nil {
+						plog.Panicf("close KV error: %v", err)
+					}
+					snapfn, err := s.r.raftStorage.snapStore.getSnapFilePath(apply.snapshot.Metadata.Index)
+					if err != nil {
+						plog.Panicf("get snapshot file path error: %v", err)
+					}
+					fn := path.Join(s.cfg.StorageDir(), databaseFilename)
+					if err := os.Rename(snapfn, fn); err != nil {
+						plog.Panicf("rename snapshot file error: %v", err)
+					}
+					s.kv = dstorage.New(fn, &s.consistIndex)
+					if err := s.kv.Restore(); err != nil {
+						plog.Panicf("restore KV error: %v", err)
+					}
+				}
 				if err := s.store.Recovery(apply.snapshot.Data); err != nil {
 					plog.Panicf("recovery store error: %v", err)
 				}
@@ -484,6 +559,9 @@ func (s *EtcdServer) run() {
 				s.snapshot(appliedi, confState)
 				snapi = appliedi
 			}
+		case <-s.r.raftStorage.reqsnap():
+			s.r.raftStorage.raftsnap() <- s.createRaftSnapshot(appliedi, confState)
+			plog.Infof("requested snapshot created at %d", snapi)
 		case err := <-s.errorc:
 			plog.Errorf("%s", err)
 			plog.Infof("the data-dir used by this member must be removed.")
@@ -594,6 +672,12 @@ func (s *EtcdServer) LeaderStats() []byte {
 func (s *EtcdServer) StoreStats() []byte { return s.store.JsonStats() }
 
 func (s *EtcdServer) AddMember(ctx context.Context, memb Member) error {
+	if s.cfg.StrictReconfigCheck && !s.cluster.isReadyToAddNewMember() {
+		// If s.cfg.StrictReconfigCheck is false, it means the option -strict-reconfig-check isn't passed to etcd.
+		// In such a case adding a new member is allowed unconditionally
+		return ErrNotEnoughStartedMembers
+	}
+
 	// TODO: move Member to protobuf type
 	b, err := json.Marshal(memb)
 	if err != nil {
@@ -608,6 +692,12 @@ func (s *EtcdServer) AddMember(ctx context.Context, memb Member) error {
 }
 
 func (s *EtcdServer) RemoveMember(ctx context.Context, id uint64) error {
+	if s.cfg.StrictReconfigCheck && !s.cluster.isReadyToRemoveMember(id) {
+		// If s.cfg.StrictReconfigCheck is false, it means the option -strict-reconfig-check isn't passed to etcd.
+		// In such a case removing a member is allowed unconditionally
+		return ErrNotEnoughStartedMembers
+	}
+
 	cc := raftpb.ConfChange{
 		Type:   raftpb.ConfChangeRemoveNode,
 		NodeID: id,
@@ -739,6 +829,8 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (uint
 	var err error
 	for i := range es {
 		e := es[i]
+		// set the consistent index of current executing entry
+		s.consistIndex.setConsistentIndex(e.Index)
 		switch e.Type {
 		case raftpb.EntryNormal:
 			// raft state machine may generate noop entry when leader confirmation.
@@ -761,6 +853,8 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (uint
 				case raftReq.V2 != nil:
 					req := raftReq.V2
 					s.w.Trigger(req.ID, s.applyRequest(*req))
+				default:
+					s.w.Trigger(raftReq.ID, s.applyV3Request(&raftReq))
 				}
 			}
 		case raftpb.EntryConfChange:
@@ -811,7 +905,10 @@ func (s *EtcdServer) applyRequest(r pb.Request) Response {
 				if err := json.Unmarshal([]byte(r.Val), &attr); err != nil {
 					plog.Panicf("unmarshal %s should never fail: %v", r.Val, err)
 				}
-				s.cluster.UpdateAttributes(id, attr)
+				ok := s.cluster.UpdateAttributes(id, attr)
+				if !ok {
+					return Response{}
+				}
 			}
 			if r.Path == path.Join(StoreClusterPrefix, "version") {
 				s.cluster.SetVersion(semver.Must(semver.NewVersion(r.Val)))
@@ -889,6 +986,29 @@ func (s *EtcdServer) applyConfChange(cc raftpb.ConfChange, confState *raftpb.Con
 	return false, nil
 }
 
+// createRaftSnapshot creates a raft snapshot that includes the state of store for v2 api.
+func (s *EtcdServer) createRaftSnapshot(snapi uint64, confState raftpb.ConfState) raftpb.Snapshot {
+	snapt, err := s.r.raftStorage.Term(snapi)
+	if err != nil {
+		log.Panicf("get term should never fail: %v", err)
+	}
+
+	clone := s.store.Clone()
+	d, err := clone.SaveNoCopy()
+	if err != nil {
+		plog.Panicf("store save should never fail: %v", err)
+	}
+
+	return raftpb.Snapshot{
+		Metadata: raftpb.SnapshotMetadata{
+			Index:     snapi,
+			Term:      snapt,
+			ConfState: confState,
+		},
+		Data: d,
+	}
+}
+
 // TODO: non-blocking snapshot
 func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 	clone := s.store.Clone()
@@ -909,6 +1029,13 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 			}
 			plog.Panicf("unexpected create snapshot error %v", err)
 		}
+		if s.cfg.V3demo {
+			// commit v3 storage because WAL file before snapshot index
+			// could be removed after SaveSnap.
+			s.kv.Commit()
+		}
+		// SaveSnap saves the snapshot and releases the locked wal files
+		// to the snapshot index.
 		if err := s.r.storage.SaveSnap(snap); err != nil {
 			plog.Fatalf("save snapshot error: %v", err)
 		}
@@ -929,6 +1056,9 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 			plog.Panicf("unexpected compaction error %v", err)
 		}
 		plog.Infof("compacted raft log at %d", compacti)
+		if s.cfg.V3demo && s.r.raftStorage.snapStore.closeSnapBefore(compacti) {
+			plog.Infof("closed snapshot stored due to compaction at %d", compacti)
+		}
 	}()
 }
 
@@ -960,7 +1090,7 @@ func (s *EtcdServer) monitorVersions() {
 			continue
 		}
 
-		v := decideClusterVersion(getVersions(s.cluster, s.id, s.cfg.Transport))
+		v := decideClusterVersion(getVersions(s.cluster, s.id, s.versionTr))
 		if v != nil {
 			// only keep major.minor version for comparasion
 			v = &semver.Version{
@@ -1024,8 +1154,42 @@ func (s *EtcdServer) parseProposeCtxErr(err error, start time.Time) error {
 		if start.After(prevLeadLost) && start.Before(curLeadElected) {
 			return ErrTimeoutDueToLeaderFail
 		}
+
+		lead := types.ID(atomic.LoadUint64(&s.r.lead))
+		switch lead {
+		case types.ID(raft.None):
+			// TODO: return error to specify it happens because the cluster does not have leader now
+		case s.ID():
+			if !isConnectedToQuorumSince(s.r.transport, start, s.ID(), s.cluster.Members()) {
+				return ErrTimeoutDueToConnectionLost
+			}
+		default:
+			if !isConnectedSince(s.r.transport, start, lead) {
+				return ErrTimeoutDueToConnectionLost
+			}
+		}
+
 		return ErrTimeout
 	default:
 		return err
 	}
+}
+
+// isConnectedToQuorumSince checks whether the local member is connected to the
+// quorum of the cluster since the given time.
+func isConnectedToQuorumSince(transport rafthttp.Transporter, since time.Time, self types.ID, members []*Member) bool {
+	var connectedNum int
+	for _, m := range members {
+		if m.ID == self || isConnectedSince(transport, since, m.ID) {
+			connectedNum++
+		}
+	}
+	return connectedNum >= (len(members)+1)/2
+}
+
+// isConnectedSince checks whether the local member is connected to the
+// remote member since the given time.
+func isConnectedSince(transport rafthttp.Transporter, since time.Time, remote types.ID) bool {
+	t := transport.ActiveSince(remote)
+	return !t.IsZero() && t.Before(since)
 }

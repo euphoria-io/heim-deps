@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/bgentry/speakeasy"
 	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/codegangsta/cli"
@@ -33,6 +34,10 @@ import (
 
 var (
 	ErrNoAvailSrc = errors.New("no available argument and stdin")
+
+	// the maximum amount of time a dial will wait for a connection to setup.
+	// 30s is long enough for most of the network conditions.
+	defaultDialTimeout = 30 * time.Second
 )
 
 // trimsplit slices s into all substrings separated by sep and returns a
@@ -59,10 +64,16 @@ func argOrStdin(args []string, stdin io.Reader, i int) (string, error) {
 }
 
 func getPeersFlagValue(c *cli.Context) []string {
-	peerstr := c.GlobalString("peers")
+	peerstr := c.GlobalString("endpoint")
 
-	// Use an environment variable if nothing was supplied on the
-	// command line
+	if peerstr == "" {
+		peerstr = os.Getenv("ETCDCTL_ENDPOINT")
+	}
+
+	if peerstr == "" {
+		peerstr = c.GlobalString("peers")
+	}
+
 	if peerstr == "" {
 		peerstr = os.Getenv("ETCDCTL_PEERS")
 	}
@@ -147,7 +158,7 @@ func getTransport(c *cli.Context) (*http.Transport, error) {
 		CertFile: certfile,
 		KeyFile:  keyfile,
 	}
-	return transport.NewTransport(tls)
+	return transport.NewTransport(tls, defaultDialTimeout)
 }
 
 func getUsernamePasswordFromFlag(usernameFlag string) (username string, password string, err error) {
@@ -175,16 +186,68 @@ func mustNewMembersAPI(c *cli.Context) client.MembersAPI {
 }
 
 func mustNewClient(c *cli.Context) client.Client {
-	eps, err := getEndpoints(c)
+	hc, err := newClient(c)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 
-	tr, err := getTransport(c)
+	debug := c.GlobalBool("debug")
+	if debug {
+		client.EnablecURLDebug()
+	}
+
+	if !c.GlobalBool("no-sync") {
+		if debug {
+			fmt.Fprintf(os.Stderr, "start to sync cluster using endpoints(%s)\n", strings.Join(hc.Endpoints(), ","))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), client.DefaultRequestTimeout)
+		err := hc.Sync(ctx)
+		cancel()
+		if err != nil {
+			if err == client.ErrNoEndpoints {
+				fmt.Fprintf(os.Stderr, "etcd cluster has no published client endpoints.\n")
+				fmt.Fprintf(os.Stderr, "Try '--no-sync' if you want to access non-published client endpoints(%s).\n", strings.Join(hc.Endpoints(), ","))
+			}
+			handleError(ExitServerError, err)
+			os.Exit(1)
+		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "got endpoints(%s) after sync\n", strings.Join(hc.Endpoints(), ","))
+		}
+	}
+
+	if debug {
+		fmt.Fprintf(os.Stderr, "Cluster-Endpoints: %s\n", strings.Join(hc.Endpoints(), ", "))
+	}
+
+	return hc
+}
+
+func mustNewClientNoSync(c *cli.Context) client.Client {
+	hc, err := newClient(c)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
+	}
+
+	if c.GlobalBool("debug") {
+		fmt.Fprintf(os.Stderr, "Cluster-Endpoints: %s\n", strings.Join(hc.Endpoints(), ", "))
+		client.EnablecURLDebug()
+	}
+
+	return hc
+}
+
+func newClient(c *cli.Context) (client.Client, error) {
+	eps, err := getEndpoints(c)
+	if err != nil {
+		return nil, err
+	}
+
+	tr, err := getTransport(c)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg := client.Config{
@@ -197,33 +260,15 @@ func mustNewClient(c *cli.Context) client.Client {
 	if uFlag != "" {
 		username, password, err := getUsernamePasswordFromFlag(uFlag)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err.Error())
-			os.Exit(1)
+			return nil, err
 		}
 		cfg.Username = username
 		cfg.Password = password
 	}
 
-	hc, err := client.New(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(1)
-	}
+	return client.New(cfg)
+}
 
-	if !c.GlobalBool("no-sync") {
-		ctx, cancel := context.WithTimeout(context.Background(), client.DefaultRequestTimeout)
-		err := hc.Sync(ctx)
-		cancel()
-		if err != nil {
-			handleError(ExitServerError, err)
-			os.Exit(1)
-		}
-	}
-
-	if c.GlobalBool("debug") {
-		fmt.Fprintf(os.Stderr, "Cluster-Endpoints: %s\n", strings.Join(hc.Endpoints(), ", "))
-		client.EnablecURLDebug()
-	}
-
-	return hc
+func contextWithTotalTimeout(c *cli.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), c.GlobalDuration("total-timeout"))
 }

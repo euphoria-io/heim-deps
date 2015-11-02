@@ -15,13 +15,16 @@
 package rafthttp
 
 import (
+	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/pkg/capnslog"
 	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/xiang90/probing"
 	"github.com/coreos/etcd/Godeps/_workspace/src/golang.org/x/net/context"
 	"github.com/coreos/etcd/etcdserver/stats"
+	"github.com/coreos/etcd/pkg/transport"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
@@ -36,7 +39,16 @@ type Raft interface {
 	ReportSnapshot(id uint64, status raft.SnapshotStatus)
 }
 
+// SnapshotSaver is the interface that wraps the SaveFrom method.
+type SnapshotSaver interface {
+	// SaveFrom saves the snapshot data at the given index from the given reader.
+	SaveFrom(r io.Reader, index uint64) error
+}
+
 type Transporter interface {
+	// Start starts the given Transporter.
+	// Start MUST be called before calling other functions in the interface.
+	Start() error
 	// Handler returns the HTTP handler of the transporter.
 	// A transporter HTTP handler handles the HTTP requests
 	// from remote peers.
@@ -68,95 +80,121 @@ type Transporter interface {
 	// It is the caller's responsibility to ensure the urls are all valid,
 	// or it panics.
 	UpdatePeer(id types.ID, urls []string)
+	// ActiveSince returns the time that the connection with the peer
+	// of the given id becomes active.
+	// If the connection is active since peer was added, it returns the adding time.
+	// If the connection is currently inactive, it returns zero time.
+	ActiveSince(id types.ID) time.Time
+	// SnapshotReady accepts a snapshot at the given index that is ready to send out.
+	// It is expected that caller sends a raft snapshot message with
+	// the given index soon, and the accepted snapshot will be sent out
+	// together. After sending, snapshot sent status is reported
+	// through Raft.SnapshotStatus.
+	// SnapshotReady MUST not be called when the snapshot sent status of previous
+	// accepted one has not been reported.
+	SnapshotReady(rc io.ReadCloser, index uint64)
 	// Stop closes the connections and stops the transporter.
 	Stop()
 }
 
-type transport struct {
-	roundTripper http.RoundTripper
-	id           types.ID
-	clusterID    types.ID
-	raft         Raft
-	serverStats  *stats.ServerStats
-	leaderStats  *stats.LeaderStats
+// Transport implements Transporter interface. It provides the functionality
+// to send raft messages to peers, and receive raft messages from peers.
+// User should call Handler method to get a handler to serve requests
+// received from peerURLs.
+// User needs to call Start before calling other functions, and call
+// Stop when the Transport is no longer used.
+type Transport struct {
+	DialTimeout time.Duration     // maximum duration before timing out dial of the request
+	TLSInfo     transport.TLSInfo // TLS information used when creating connection
 
-	mu      sync.RWMutex         // protect the term, remote and peer map
-	term    uint64               // the latest term that has been observed
+	ID          types.ID           // local member ID
+	ClusterID   types.ID           // raft cluster ID for request validation
+	Raft        Raft               // raft state machine, to which the Transport forwards received messages and reports status
+	SnapSaver   SnapshotSaver      // used to save snapshot in v3 snapshot messages
+	ServerStats *stats.ServerStats // used to record general transportation statistics
+	// used to record transportation statistics with followers when
+	// performing as leader in raft protocol
+	LeaderStats *stats.LeaderStats
+	// error channel used to report detected critical error, e.g.,
+	// the member has been permanently removed from the cluster
+	// When an error is received from ErrorC, user should stop raft state
+	// machine and thus stop the Transport.
+	ErrorC chan error
+	V3demo bool
+
+	streamRt   http.RoundTripper // roundTripper used by streams
+	pipelineRt http.RoundTripper // roundTripper used by pipelines
+
+	mu      sync.RWMutex         // protect the remote and peer map
 	remotes map[types.ID]*remote // remotes map that helps newly joined member to catch up
 	peers   map[types.ID]Peer    // peers map
 
+	snapst *snapshotStore
+
 	prober probing.Prober
-	errorc chan error
 }
 
-func NewTransporter(rt http.RoundTripper, id, cid types.ID, r Raft, errorc chan error, ss *stats.ServerStats, ls *stats.LeaderStats) Transporter {
-	return &transport{
-		roundTripper: rt,
-		id:           id,
-		clusterID:    cid,
-		raft:         r,
-		serverStats:  ss,
-		leaderStats:  ls,
-		remotes:      make(map[types.ID]*remote),
-		peers:        make(map[types.ID]Peer),
-
-		prober: probing.NewProber(rt),
-		errorc: errorc,
+func (t *Transport) Start() error {
+	var err error
+	// Read/write timeout is set for stream roundTripper to promptly
+	// find out broken status, which minimizes the number of messages
+	// sent on broken connection.
+	t.streamRt, err = transport.NewTimeoutTransport(t.TLSInfo, t.DialTimeout, ConnReadTimeout, ConnWriteTimeout)
+	if err != nil {
+		return err
 	}
+	t.pipelineRt, err = transport.NewTransport(t.TLSInfo, t.DialTimeout)
+	if err != nil {
+		return err
+	}
+	t.remotes = make(map[types.ID]*remote)
+	t.peers = make(map[types.ID]Peer)
+	t.snapst = &snapshotStore{}
+	t.prober = probing.NewProber(t.pipelineRt)
+	return nil
 }
 
-func (t *transport) Handler() http.Handler {
-	pipelineHandler := NewHandler(t.raft, t.clusterID)
-	streamHandler := newStreamHandler(t, t.raft, t.id, t.clusterID)
+func (t *Transport) Handler() http.Handler {
+	pipelineHandler := newPipelineHandler(t.Raft, t.ClusterID)
+	streamHandler := newStreamHandler(t, t.Raft, t.ID, t.ClusterID)
+	snapHandler := newSnapshotHandler(t.Raft, t.SnapSaver, t.ClusterID)
 	mux := http.NewServeMux()
 	mux.Handle(RaftPrefix, pipelineHandler)
 	mux.Handle(RaftStreamPrefix+"/", streamHandler)
+	mux.Handle(RaftSnapshotPrefix, snapHandler)
 	mux.Handle(ProbingPrefix, probing.NewHandler())
 	return mux
 }
 
-func (t *transport) Get(id types.ID) Peer {
+func (t *Transport) Get(id types.ID) Peer {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.peers[id]
 }
 
-func (t *transport) maybeUpdatePeersTerm(term uint64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.term >= term {
-		return
-	}
-	t.term = term
-	for _, p := range t.peers {
-		p.setTerm(term)
-	}
-}
-
-func (t *transport) Send(msgs []raftpb.Message) {
+func (t *Transport) Send(msgs []raftpb.Message) {
 	for _, m := range msgs {
-		// intentionally dropped message
 		if m.To == 0 {
+			// ignore intentionally dropped message
 			continue
 		}
 		to := types.ID(m.To)
 
-		if m.Type != raftpb.MsgProp { // proposal message does not have a valid term
-			t.maybeUpdatePeersTerm(m.Term)
-		}
-
+		t.mu.RLock()
 		p, ok := t.peers[to]
+		t.mu.RUnlock()
+
 		if ok {
 			if m.Type == raftpb.MsgApp {
-				t.serverStats.SendAppendReq(m.Size())
+				t.ServerStats.SendAppendReq(m.Size())
 			}
-			p.Send(m)
+			p.send(m)
 			continue
 		}
 
 		g, ok := t.remotes[to]
 		if ok {
-			g.Send(m)
+			g.send(m)
 			continue
 		}
 
@@ -164,20 +202,23 @@ func (t *transport) Send(msgs []raftpb.Message) {
 	}
 }
 
-func (t *transport) Stop() {
+func (t *Transport) Stop() {
 	for _, r := range t.remotes {
-		r.Stop()
+		r.stop()
 	}
 	for _, p := range t.peers {
-		p.Stop()
+		p.stop()
 	}
 	t.prober.RemoveAll()
-	if tr, ok := t.roundTripper.(*http.Transport); ok {
+	if tr, ok := t.streamRt.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	if tr, ok := t.pipelineRt.(*http.Transport); ok {
 		tr.CloseIdleConnections()
 	}
 }
 
-func (t *transport) AddRemote(id types.ID, us []string) {
+func (t *Transport) AddRemote(id types.ID, us []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, ok := t.remotes[id]; ok {
@@ -187,10 +228,10 @@ func (t *transport) AddRemote(id types.ID, us []string) {
 	if err != nil {
 		plog.Panicf("newURLs %+v should never fail: %+v", us, err)
 	}
-	t.remotes[id] = startRemote(t.roundTripper, urls, t.id, id, t.clusterID, t.raft, t.errorc)
+	t.remotes[id] = startRemote(t.pipelineRt, urls, t.ID, id, t.ClusterID, t.Raft, t.ErrorC)
 }
 
-func (t *transport) AddPeer(id types.ID, us []string) {
+func (t *Transport) AddPeer(id types.ID, us []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, ok := t.peers[id]; ok {
@@ -200,18 +241,18 @@ func (t *transport) AddPeer(id types.ID, us []string) {
 	if err != nil {
 		plog.Panicf("newURLs %+v should never fail: %+v", us, err)
 	}
-	fs := t.leaderStats.Follower(id.String())
-	t.peers[id] = startPeer(t.roundTripper, urls, t.id, id, t.clusterID, t.raft, fs, t.errorc, t.term)
+	fs := t.LeaderStats.Follower(id.String())
+	t.peers[id] = startPeer(t.streamRt, t.pipelineRt, urls, t.ID, id, t.ClusterID, t.snapst, t.Raft, fs, t.ErrorC, t.V3demo)
 	addPeerToProber(t.prober, id.String(), us)
 }
 
-func (t *transport) RemovePeer(id types.ID) {
+func (t *Transport) RemovePeer(id types.ID) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.removePeer(id)
 }
 
-func (t *transport) RemoveAllPeers() {
+func (t *Transport) RemoveAllPeers() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for id := range t.peers {
@@ -220,18 +261,18 @@ func (t *transport) RemoveAllPeers() {
 }
 
 // the caller of this function must have the peers mutex.
-func (t *transport) removePeer(id types.ID) {
+func (t *Transport) removePeer(id types.ID) {
 	if peer, ok := t.peers[id]; ok {
-		peer.Stop()
+		peer.stop()
 	} else {
 		plog.Panicf("unexpected removal of unknown peer '%d'", id)
 	}
 	delete(t.peers, id)
-	delete(t.leaderStats.Followers, id.String())
+	delete(t.LeaderStats.Followers, id.String())
 	t.prober.Remove(id.String())
 }
 
-func (t *transport) UpdatePeer(id types.ID, us []string) {
+func (t *Transport) UpdatePeer(id types.ID, us []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// TODO: return error or just panic?
@@ -242,10 +283,23 @@ func (t *transport) UpdatePeer(id types.ID, us []string) {
 	if err != nil {
 		plog.Panicf("newURLs %+v should never fail: %+v", us, err)
 	}
-	t.peers[id].Update(urls)
+	t.peers[id].update(urls)
 
 	t.prober.Remove(id.String())
 	addPeerToProber(t.prober, id.String(), us)
+}
+
+func (t *Transport) ActiveSince(id types.ID) time.Time {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p, ok := t.peers[id]; ok {
+		return p.activeSince()
+	}
+	return time.Time{}
+}
+
+func (t *Transport) SnapshotReady(rc io.ReadCloser, index uint64) {
+	t.snapst.put(rc, index)
 }
 
 type Pausable interface {
@@ -254,13 +308,13 @@ type Pausable interface {
 }
 
 // for testing
-func (t *transport) Pause() {
+func (t *Transport) Pause() {
 	for _, p := range t.peers {
 		p.(Pausable).Pause()
 	}
 }
 
-func (t *transport) Resume() {
+func (t *Transport) Resume() {
 	for _, p := range t.peers {
 		p.(Pausable).Resume()
 	}

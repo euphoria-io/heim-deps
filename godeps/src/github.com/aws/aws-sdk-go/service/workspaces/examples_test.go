@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/workspaces"
 )
 
@@ -15,14 +16,17 @@ var _ time.Duration
 var _ bytes.Buffer
 
 func ExampleWorkSpaces_CreateWorkspaces() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.CreateWorkspacesInput{
 		Workspaces: []*workspaces.WorkspaceRequest{ // Required
 			{ // Required
-				BundleId:    aws.String("BundleId"),    // Required
-				DirectoryId: aws.String("DirectoryId"), // Required
-				UserName:    aws.String("UserName"),    // Required
+				BundleId:                    aws.String("BundleId"),    // Required
+				DirectoryId:                 aws.String("DirectoryId"), // Required
+				UserName:                    aws.String("UserName"),    // Required
+				RootVolumeEncryptionEnabled: aws.Bool(true),
+				UserVolumeEncryptionEnabled: aws.Bool(true),
+				VolumeEncryptionKey:         aws.String("VolumeEncryptionKey"),
 			},
 			// More values...
 		},
@@ -41,7 +45,7 @@ func ExampleWorkSpaces_CreateWorkspaces() {
 }
 
 func ExampleWorkSpaces_DescribeWorkspaceBundles() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.DescribeWorkspaceBundlesInput{
 		BundleIds: []*string{
@@ -65,7 +69,7 @@ func ExampleWorkSpaces_DescribeWorkspaceBundles() {
 }
 
 func ExampleWorkSpaces_DescribeWorkspaceDirectories() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.DescribeWorkspaceDirectoriesInput{
 		DirectoryIds: []*string{
@@ -88,7 +92,7 @@ func ExampleWorkSpaces_DescribeWorkspaceDirectories() {
 }
 
 func ExampleWorkSpaces_DescribeWorkspaces() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.DescribeWorkspacesInput{
 		BundleId:    aws.String("BundleId"),
@@ -115,7 +119,7 @@ func ExampleWorkSpaces_DescribeWorkspaces() {
 }
 
 func ExampleWorkSpaces_RebootWorkspaces() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.RebootWorkspacesInput{
 		RebootWorkspaceRequests: []*workspaces.RebootRequest{ // Required
@@ -139,7 +143,7 @@ func ExampleWorkSpaces_RebootWorkspaces() {
 }
 
 func ExampleWorkSpaces_RebuildWorkspaces() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.RebuildWorkspacesInput{
 		RebuildWorkspaceRequests: []*workspaces.RebuildRequest{ // Required
@@ -163,7 +167,7 @@ func ExampleWorkSpaces_RebuildWorkspaces() {
 }
 
 func ExampleWorkSpaces_TerminateWorkspaces() {
-	svc := workspaces.New(nil)
+	svc := workspaces.New(session.New())
 
 	params := &workspaces.TerminateWorkspacesInput{
 		TerminateWorkspaceRequests: []*workspaces.TerminateRequest{ // Required

@@ -24,7 +24,7 @@ import (
 	"path"
 	"reflect"
 	"runtime"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coreos/etcd/Godeps/_workspace/src/github.com/coreos/go-systemd/daemon"
@@ -96,12 +96,8 @@ func Main() {
 	plog.Infof("Go Version: %s\n", runtime.Version())
 	plog.Infof("Go OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 
-	GoMaxProcs := 1
-	if envMaxProcs, err := strconv.Atoi(os.Getenv("GOMAXPROCS")); err == nil {
-		GoMaxProcs = envMaxProcs
-	}
+	GoMaxProcs := runtime.GOMAXPROCS(0)
 	plog.Infof("setting maximum number of CPUs to %d, total number of available CPUs is %d", GoMaxProcs, runtime.NumCPU())
-	runtime.GOMAXPROCS(GoMaxProcs)
 
 	// TODO: check whether fields are set instead of whether fields have default value
 	if cfg.name != defaultName && cfg.initialCluster == initialClusterFromName(defaultName) {
@@ -145,14 +141,33 @@ func Main() {
 			plog.Errorf("But etcd could not find valid cluster configuration in the given data dir (%s).", cfg.dir)
 			plog.Infof("Please check the given data dir path if the previous bootstrap succeeded")
 			plog.Infof("or use a new discovery token if the previous bootstrap failed.")
-			os.Exit(1)
 		case discovery.ErrDuplicateName:
 			plog.Errorf("member with duplicated name has registered with discovery service token(%s).", cfg.durl)
 			plog.Errorf("please check (cURL) the discovery token for more information.")
 			plog.Errorf("please do not reuse the discovery token and generate a new one to bootstrap the cluster.")
 		default:
+			if strings.Contains(err.Error(), "include") && strings.Contains(err.Error(), "--initial-cluster") {
+				plog.Infof("%v", err)
+				if cfg.initialCluster == initialClusterFromName(cfg.name) {
+					plog.Infof("forgot to set --initial-cluster flag?")
+				}
+				if types.URLs(cfg.apurls).String() == defaultInitialAdvertisePeerURLs {
+					plog.Infof("forgot to set --initial-advertise-peer-urls flag?")
+				}
+				if cfg.initialCluster == initialClusterFromName(cfg.name) && len(cfg.durl) == 0 {
+					plog.Infof("if you want to use discovery service, please set --discovery flag.")
+				}
+				os.Exit(1)
+			}
+			if etcdserver.IsDiscoveryError(err) {
+				plog.Errorf("%v", err)
+				plog.Infof("discovery token %s was used, but failed to bootstrap the cluster.", cfg.durl)
+				plog.Infof("please generate a new discovery token and try to bootstrap again.")
+				os.Exit(1)
+			}
 			plog.Fatalf("%v", err)
 		}
+		os.Exit(1)
 	}
 
 	osutil.HandleInterrupts()
@@ -166,7 +181,10 @@ func Main() {
 		// for less than one second.
 		err := daemon.SdNotify("READY=1")
 		if err != nil {
-			plog.Errorf("failed to notify systemd for readiness")
+			plog.Errorf("failed to notify systemd for readiness: %v", err)
+			if err == daemon.SdNotifyNoSocket {
+				plog.Errorf("forgot to set Type=notify in systemd service file?")
+			}
 		}
 	}
 
@@ -176,14 +194,9 @@ func Main() {
 
 // startEtcd launches the etcd server and HTTP handlers for client/server communication.
 func startEtcd(cfg *config) (<-chan struct{}, error) {
-	urlsmap, token, err := getPeerURLsMapAndToken(cfg)
+	urlsmap, token, err := getPeerURLsMapAndToken(cfg, "etcd")
 	if err != nil {
 		return nil, fmt.Errorf("error setting up initial cluster: %v", err)
-	}
-
-	pt, err := transport.NewTimeoutTransport(cfg.peerTLSInfo, peerDialTimeout(cfg.ElectionMs), rafthttp.ConnReadTimeout, rafthttp.ConnWriteTimeout)
-	if err != nil {
-		return nil, err
 	}
 
 	if !cfg.peerTLSInfo.Empty() {
@@ -244,11 +257,11 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 
 	var v3l net.Listener
 	if cfg.v3demo {
-		v3l, err = net.Listen("tcp", "127.0.0.1:12379")
+		v3l, err = net.Listen("tcp", cfg.gRPCAddr)
 		if err != nil {
 			plog.Fatal(err)
 		}
-		plog.Infof("listening for client rpc on 127.0.0.1:12379")
+		plog.Infof("listening for client rpc on %s", cfg.gRPCAddr)
 	}
 
 	srvcfg := &etcdserver.ServerConfig{
@@ -256,6 +269,7 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 		ClientURLs:          cfg.acurls,
 		PeerURLs:            cfg.apurls,
 		DataDir:             cfg.dir,
+		DedicatedWALDir:     cfg.walDir,
 		SnapCount:           cfg.snapCount,
 		MaxSnapFiles:        cfg.maxSnapFiles,
 		MaxWALFiles:         cfg.maxWalFiles,
@@ -265,10 +279,11 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 		DiscoveryProxy:      cfg.dproxy,
 		NewCluster:          cfg.isNewCluster(),
 		ForceNewCluster:     cfg.forceNewCluster,
-		Transport:           pt,
+		PeerTLSInfo:         cfg.peerTLSInfo,
 		TickMs:              cfg.TickMs,
 		ElectionTicks:       cfg.electionTicks(),
 		V3demo:              cfg.v3demo,
+		StrictReconfigCheck: cfg.strictReconfigCheck,
 	}
 	var s *etcdserver.EtcdServer
 	s, err = etcdserver.NewServer(srvcfg)
@@ -313,16 +328,16 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 
 // startProxy launches an HTTP proxy for client communication which proxies to other etcd nodes.
 func startProxy(cfg *config) error {
-	urlsmap, _, err := getPeerURLsMapAndToken(cfg)
+	urlsmap, _, err := getPeerURLsMapAndToken(cfg, "proxy")
 	if err != nil {
 		return fmt.Errorf("error setting up initial cluster: %v", err)
 	}
 
 	pt, err := transport.NewTimeoutTransport(cfg.peerTLSInfo, time.Duration(cfg.proxyDialTimeoutMs)*time.Millisecond, time.Duration(cfg.proxyReadTimeoutMs)*time.Millisecond, time.Duration(cfg.proxyWriteTimeoutMs)*time.Millisecond)
-	pt.MaxIdleConnsPerHost = proxy.DefaultMaxIdleConnsPerHost
 	if err != nil {
 		return err
 	}
+	pt.MaxIdleConnsPerHost = proxy.DefaultMaxIdleConnsPerHost
 
 	tr, err := transport.NewTimeoutTransport(cfg.peerTLSInfo, time.Duration(cfg.proxyDialTimeoutMs)*time.Millisecond, time.Duration(cfg.proxyReadTimeoutMs)*time.Millisecond, time.Duration(cfg.proxyWriteTimeoutMs)*time.Millisecond)
 	if err != nil {
@@ -371,7 +386,7 @@ func startProxy(cfg *config) error {
 	uf := func() []string {
 		gcls, err := etcdserver.GetClusterFromRemotePeers(peerURLs, tr)
 		// TODO: remove the 2nd check when we fix GetClusterFromPeers
-		// GetClusterFromPeers should not return nil error with an invaild empty cluster
+		// GetClusterFromPeers should not return nil error with an invalid empty cluster
 		if err != nil {
 			plog.Warningf("proxy: %v", err)
 			return []string{}
@@ -421,7 +436,7 @@ func startProxy(cfg *config) error {
 			return err
 		}
 
-		host := u.Host
+		host := u.String()
 		go func() {
 			plog.Info("proxy: listening for client requests on ", host)
 			mux := http.NewServeMux()
@@ -434,7 +449,7 @@ func startProxy(cfg *config) error {
 }
 
 // getPeerURLsMapAndToken sets up an initial peer URLsMap and cluster token for bootstrap or discovery.
-func getPeerURLsMapAndToken(cfg *config) (urlsmap types.URLsMap, token string, err error) {
+func getPeerURLsMapAndToken(cfg *config, which string) (urlsmap types.URLsMap, token string, err error) {
 	switch {
 	case cfg.durl != "":
 		urlsmap = types.URLsMap{}
@@ -449,8 +464,12 @@ func getPeerURLsMapAndToken(cfg *config) (urlsmap types.URLsMap, token string, e
 			return nil, "", err
 		}
 		urlsmap, err = types.NewURLsMap(clusterStr)
-		if _, ok := urlsmap[cfg.name]; !ok {
-			return nil, "", fmt.Errorf("cannot find local etcd member %q in SRV records", cfg.name)
+		// only etcd member must belong to the discovered cluster.
+		// proxy does not need to belong to the discovered cluster.
+		if which == "etcd" {
+			if _, ok := urlsmap[cfg.name]; !ok {
+				return nil, "", fmt.Errorf("cannot find local etcd member %q in SRV records", cfg.name)
+			}
 		}
 	default:
 		// We're statically configured, and cluster has appropriately been set.
@@ -509,10 +528,4 @@ func setupLogging(cfg *config) {
 		}
 		repoLog.SetLogLevel(settings)
 	}
-}
-
-func peerDialTimeout(electionMs uint) time.Duration {
-	// 1s for queue wait and system delay
-	// + one RTT, which is smaller than 1/5 election timeout
-	return time.Second + time.Duration(electionMs)*time.Millisecond/5
 }

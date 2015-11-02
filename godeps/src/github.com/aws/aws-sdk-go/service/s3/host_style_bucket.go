@@ -24,13 +24,19 @@ func dnsCompatibleBucketName(bucket string) bool {
 // the host. This is false if S3ForcePathStyle is explicitly set or if the
 // bucket is not DNS compatible.
 func hostStyleBucketName(r *request.Request, bucket string) bool {
-	if aws.BoolValue(r.Service.Config.S3ForcePathStyle) {
+	if aws.BoolValue(r.Config.S3ForcePathStyle) {
 		return false
 	}
 
 	// Bucket might be DNS compatible but dots in the hostname will fail
 	// certificate validation, so do not use host-style.
 	if r.HTTPRequest.URL.Scheme == "https" && strings.Contains(bucket, ".") {
+		return false
+	}
+
+	// GetBucketLocation should be able to be called from any region within
+	// a partition, and return the associated region of the bucket.
+	if r.Operation.Name == opGetBucketLocation {
 		return false
 	}
 

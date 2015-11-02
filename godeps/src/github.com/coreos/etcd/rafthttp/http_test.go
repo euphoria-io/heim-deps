@@ -149,7 +149,7 @@ func TestServeRaftPrefix(t *testing.T) {
 		req.Header.Set("X-Etcd-Cluster-ID", tt.clusterID)
 		req.Header.Set("X-Server-Version", version.Version)
 		rw := httptest.NewRecorder()
-		h := NewHandler(tt.p, types.ID(0))
+		h := newPipelineHandler(tt.p, types.ID(0))
 		h.ServeHTTP(rw, req)
 		if rw.Code != tt.wcode {
 			t.Errorf("#%d: got code=%d, want %d", i, rw.Code, tt.wcode)
@@ -170,11 +170,6 @@ func TestServeRaftStreamPrefix(t *testing.T) {
 			RaftStreamPrefix + "/msgapp/1",
 			streamTypeMsgAppV2,
 		},
-		// backward compatibility
-		{
-			RaftStreamPrefix + "/1",
-			streamTypeMsgApp,
-		},
 	}
 	for i, tt := range tests {
 		req, err := http.NewRequest("GET", "http://localhost:2380"+tt.path, nil)
@@ -184,8 +179,6 @@ func TestServeRaftStreamPrefix(t *testing.T) {
 		req.Header.Set("X-Etcd-Cluster-ID", "1")
 		req.Header.Set("X-Server-Version", version.Version)
 		req.Header.Set("X-Raft-To", "2")
-		wterm := "1"
-		req.Header.Set("X-Raft-Term", wterm)
 
 		peer := newFakePeer()
 		peerGetter := &fakePeerGetter{peers: map[types.ID]Peer{types.ID(1): peer}}
@@ -205,9 +198,6 @@ func TestServeRaftStreamPrefix(t *testing.T) {
 		}
 		if conn.t != tt.wtype {
 			t.Errorf("#%d: type = %s, want %s", i, conn.t, tt.wtype)
-		}
-		if conn.termStr != wterm {
-			t.Errorf("#%d: term = %s, want %s", i, conn.termStr, wterm)
 		}
 		conn.Close()
 	}
@@ -352,7 +342,6 @@ func (pg *fakePeerGetter) Get(id types.ID) Peer { return pg.peers[id] }
 type fakePeer struct {
 	msgs  []raftpb.Message
 	urls  types.URLs
-	term  uint64
 	connc chan *outgoingConn
 }
 
@@ -362,8 +351,8 @@ func newFakePeer() *fakePeer {
 	}
 }
 
-func (pr *fakePeer) Send(m raftpb.Message)                 { pr.msgs = append(pr.msgs, m) }
-func (pr *fakePeer) Update(urls types.URLs)                { pr.urls = urls }
-func (pr *fakePeer) setTerm(term uint64)                   { pr.term = term }
+func (pr *fakePeer) send(m raftpb.Message)                 { pr.msgs = append(pr.msgs, m) }
+func (pr *fakePeer) update(urls types.URLs)                { pr.urls = urls }
 func (pr *fakePeer) attachOutgoingConn(conn *outgoingConn) { pr.connc <- conn }
-func (pr *fakePeer) Stop()                                 {}
+func (pr *fakePeer) activeSince() time.Time                { return time.Time{} }
+func (pr *fakePeer) stop()                                 {}

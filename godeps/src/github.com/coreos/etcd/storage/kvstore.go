@@ -1,8 +1,21 @@
+// Copyright 2015 CoreOS, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package storage
 
 import (
 	"errors"
-	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -25,6 +38,7 @@ var (
 	ErrTxnIDMismatch = errors.New("storage: txn id mismatch")
 	ErrCompacted     = errors.New("storage: required revision has been compacted")
 	ErrFutureRev     = errors.New("storage: required revision is a future revision")
+	ErrCanceled      = errors.New("storage: watcher is canceled")
 )
 
 type store struct {
@@ -37,15 +51,12 @@ type store struct {
 	// the main revision of the last compaction
 	compactMainRev int64
 
+	tx    backend.BatchTx
 	tmu   sync.Mutex // protect the txnID field
 	txnID int64      // tracks the current txnID to verify txn operations
 
 	wg    sync.WaitGroup
 	stopc chan struct{}
-}
-
-func New(path string) KV {
-	return newStore(path)
 }
 
 func newStore(path string) *store {
@@ -67,10 +78,19 @@ func newStore(path string) *store {
 	return s
 }
 
+func (s *store) Rev() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.currentRev.main
+}
+
 func (s *store) Put(key, value []byte) int64 {
 	id := s.TxnBegin()
-	s.put(key, value, s.currentRev.main+1)
-	s.TxnEnd(id)
+	s.put(key, value)
+	s.txnEnd(id)
+
+	putCounter.Inc()
 
 	return int64(s.currentRev.main)
 }
@@ -78,15 +98,19 @@ func (s *store) Put(key, value []byte) int64 {
 func (s *store) Range(key, end []byte, limit, rangeRev int64) (kvs []storagepb.KeyValue, rev int64, err error) {
 	id := s.TxnBegin()
 	kvs, rev, err = s.rangeKeys(key, end, limit, rangeRev)
-	s.TxnEnd(id)
+	s.txnEnd(id)
+
+	rangeCounter.Inc()
 
 	return kvs, rev, err
 }
 
 func (s *store) DeleteRange(key, end []byte) (n, rev int64) {
 	id := s.TxnBegin()
-	n = s.deleteRange(key, end, s.currentRev.main+1)
-	s.TxnEnd(id)
+	n = s.deleteRange(key, end)
+	s.txnEnd(id)
+
+	deleteCounter.Inc()
 
 	return n, int64(s.currentRev.main)
 }
@@ -94,6 +118,8 @@ func (s *store) DeleteRange(key, end []byte) (n, rev int64) {
 func (s *store) TxnBegin() int64 {
 	s.mu.Lock()
 	s.currentRev.sub = 0
+	s.tx = s.b.BatchTx()
+	s.tx.Lock()
 
 	s.tmu.Lock()
 	defer s.tmu.Unlock()
@@ -102,16 +128,31 @@ func (s *store) TxnBegin() int64 {
 }
 
 func (s *store) TxnEnd(txnID int64) error {
+	err := s.txnEnd(txnID)
+	if err != nil {
+		return err
+	}
+
+	txnCounter.Inc()
+	return nil
+}
+
+// txnEnd is used for unlocking an internal txn. It does
+// not increase the txnCounter.
+func (s *store) txnEnd(txnID int64) error {
 	s.tmu.Lock()
 	defer s.tmu.Unlock()
 	if txnID != s.txnID {
 		return ErrTxnIDMismatch
 	}
 
+	s.tx.Unlock()
 	if s.currentRev.sub != 0 {
 		s.currentRev.main += 1
 	}
 	s.currentRev.sub = 0
+
+	dbTotalSize.Set(float64(s.b.Size()))
 	s.mu.Unlock()
 	return nil
 }
@@ -132,7 +173,7 @@ func (s *store) TxnPut(txnID int64, key, value []byte) (rev int64, err error) {
 		return 0, ErrTxnIDMismatch
 	}
 
-	s.put(key, value, s.currentRev.main+1)
+	s.put(key, value)
 	return int64(s.currentRev.main + 1), nil
 }
 
@@ -143,13 +184,71 @@ func (s *store) TxnDeleteRange(txnID int64, key, end []byte) (n, rev int64, err 
 		return 0, 0, ErrTxnIDMismatch
 	}
 
-	n = s.deleteRange(key, end, s.currentRev.main+1)
+	n = s.deleteRange(key, end)
 	if n != 0 || s.currentRev.sub != 0 {
 		rev = int64(s.currentRev.main + 1)
 	} else {
 		rev = int64(s.currentRev.main)
 	}
 	return n, rev, nil
+}
+
+// RangeEvents gets the events from key to end starting from startRev.
+// If `end` is nil, the request only observes the events on key.
+// If `end` is not nil, it observes the events on key range [key, range_end).
+// Limit limits the number of events returned.
+// If startRev <=0, rangeEvents returns events from the beginning of uncompacted history.
+//
+// If the required start rev is compacted, ErrCompacted will be returned.
+// If the required start rev has not happened, ErrFutureRev will be returned.
+//
+// RangeEvents returns events that satisfy the requirement (0 <= n <= limit).
+// If events in the revision range have not all happened, it returns immeidately
+// what is available.
+// It also returns nextRev which indicates the start revision used for the following
+// RangeEvents call. The nextRev could be smaller than the given endRev if the store
+// has not progressed so far or it hits the event limit.
+//
+// TODO: return byte slices instead of events to avoid meaningless encode and decode.
+func (s *store) RangeEvents(key, end []byte, limit, startRev int64) (evs []storagepb.Event, nextRev int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if startRev > 0 && startRev <= s.compactMainRev {
+		return nil, 0, ErrCompacted
+	}
+	if startRev > s.currentRev.main {
+		return nil, 0, ErrFutureRev
+	}
+
+	revs := s.kvindex.RangeEvents(key, end, startRev)
+	if len(revs) == 0 {
+		return nil, s.currentRev.main + 1, nil
+	}
+
+	tx := s.b.BatchTx()
+	tx.Lock()
+	defer tx.Unlock()
+	// fetch events from the backend using revisions
+	for _, rev := range revs {
+		revbytes := newRevBytes()
+		revToBytes(rev, revbytes)
+
+		_, vs := tx.UnsafeRange(keyBucketName, revbytes, nil, 0)
+		if len(vs) != 1 {
+			log.Fatalf("storage: range cannot find rev (%d,%d)", rev.main, rev.sub)
+		}
+
+		e := storagepb.Event{}
+		if err := e.Unmarshal(vs[0]); err != nil {
+			log.Fatalf("storage: cannot unmarshal event: %v", err)
+		}
+		evs = append(evs, e)
+		if limit > 0 && len(evs) >= int(limit) {
+			return evs, rev.main + 1, nil
+		}
+	}
+	return evs, s.currentRev.main + 1, nil
 }
 
 func (s *store) Compact(rev int64) error {
@@ -161,6 +260,8 @@ func (s *store) Compact(rev int64) error {
 	if rev > s.currentRev.main {
 		return ErrFutureRev
 	}
+
+	start := time.Now()
 
 	s.compactMainRev = rev
 
@@ -178,13 +279,22 @@ func (s *store) Compact(rev int64) error {
 
 	s.wg.Add(1)
 	go s.scheduleCompaction(rev, keep)
+
+	indexCompactionPauseDurations.Observe(float64(time.Now().Sub(start) / time.Millisecond))
 	return nil
 }
 
-func (s *store) Snapshot(w io.Writer) (int64, error) {
+func (s *store) Hash() (uint32, error) {
 	s.b.ForceCommit()
-	return s.b.Snapshot(w)
+	return s.b.Hash()
 }
+
+func (s *store) Snapshot() Snapshot {
+	s.b.ForceCommit()
+	return s.b.Snapshot()
+}
+
+func (s *store) Commit() { s.b.ForceCommit() }
 
 func (s *store) Restore() error {
 	s.mu.Lock()
@@ -216,7 +326,7 @@ func (s *store) Restore() error {
 		// restore index
 		switch e.Type {
 		case storagepb.PUT:
-			s.kvindex.Restore(e.Kv.Key, revision{e.Kv.CreateIndex, 0}, rev, e.Kv.Version)
+			s.kvindex.Restore(e.Kv.Key, revision{e.Kv.CreateRevision, 0}, rev, e.Kv.Version)
 		case storagepb.DELETE:
 			s.kvindex.Tombstone(e.Kv.Key, rev)
 		default:
@@ -281,14 +391,11 @@ func (s *store) rangeKeys(key, end []byte, limit, rangeRev int64) (kvs []storage
 		return nil, rev, nil
 	}
 
-	tx := s.b.BatchTx()
-	tx.Lock()
-	defer tx.Unlock()
 	for _, revpair := range revpairs {
 		revbytes := newRevBytes()
 		revToBytes(revpair, revbytes)
 
-		_, vs := tx.UnsafeRange(keyBucketName, revbytes, nil, 0)
+		_, vs := s.tx.UnsafeRange(keyBucketName, revbytes, nil, 0)
 		if len(vs) != 1 {
 			log.Fatalf("storage: range cannot find rev (%d,%d)", revpair.main, revpair.sub)
 		}
@@ -297,9 +404,7 @@ func (s *store) rangeKeys(key, end []byte, limit, rangeRev int64) (kvs []storage
 		if err := e.Unmarshal(vs[0]); err != nil {
 			log.Fatalf("storage: cannot unmarshal event: %v", err)
 		}
-		if e.Type == storagepb.PUT {
-			kvs = append(kvs, *e.Kv)
-		}
+		kvs = append(kvs, *e.Kv)
 		if limit > 0 && len(kvs) >= int(limit) {
 			break
 		}
@@ -307,7 +412,8 @@ func (s *store) rangeKeys(key, end []byte, limit, rangeRev int64) (kvs []storage
 	return kvs, rev, nil
 }
 
-func (s *store) put(key, value []byte, rev int64) {
+func (s *store) put(key, value []byte) {
+	rev := s.currentRev.main + 1
 	c := rev
 
 	// if the key exists before, use its previous created
@@ -323,11 +429,11 @@ func (s *store) put(key, value []byte, rev int64) {
 	event := storagepb.Event{
 		Type: storagepb.PUT,
 		Kv: &storagepb.KeyValue{
-			Key:         key,
-			Value:       value,
-			CreateIndex: c,
-			ModIndex:    rev,
-			Version:     ver,
+			Key:            key,
+			Value:          value,
+			CreateRevision: c,
+			ModRevision:    rev,
+			Version:        ver,
 		},
 	}
 
@@ -336,17 +442,13 @@ func (s *store) put(key, value []byte, rev int64) {
 		log.Fatalf("storage: cannot marshal event: %v", err)
 	}
 
-	tx := s.b.BatchTx()
-	tx.Lock()
-	defer tx.Unlock()
-	tx.UnsafePut(keyBucketName, ibytes, d)
+	s.tx.UnsafePut(keyBucketName, ibytes, d)
 	s.kvindex.Put(key, revision{main: rev, sub: s.currentRev.sub})
 	s.currentRev.sub += 1
 }
 
-func (s *store) deleteRange(key, end []byte, rev int64) int64 {
-	var n int64
-	rrev := rev
+func (s *store) deleteRange(key, end []byte) int64 {
+	rrev := s.currentRev.main
 	if s.currentRev.sub > 0 {
 		rrev += 1
 	}
@@ -357,44 +459,13 @@ func (s *store) deleteRange(key, end []byte, rev int64) int64 {
 	}
 
 	for _, key := range keys {
-		ok := s.delete(key, rev)
-		if ok {
-			n++
-		}
+		s.delete(key)
 	}
-	return n
+	return int64(len(keys))
 }
 
-func (s *store) delete(key []byte, mainrev int64) bool {
-	grev := mainrev
-	if s.currentRev.sub > 0 {
-		grev += 1
-	}
-	rev, _, _, err := s.kvindex.Get(key, grev)
-	if err != nil {
-		// key not exist
-		return false
-	}
-
-	tx := s.b.BatchTx()
-	tx.Lock()
-	defer tx.Unlock()
-
-	revbytes := newRevBytes()
-	revToBytes(rev, revbytes)
-
-	_, vs := tx.UnsafeRange(keyBucketName, revbytes, nil, 0)
-	if len(vs) != 1 {
-		log.Fatalf("storage: delete cannot find rev (%d,%d)", rev.main, rev.sub)
-	}
-
-	e := &storagepb.Event{}
-	if err := e.Unmarshal(vs[0]); err != nil {
-		log.Fatalf("storage: cannot unmarshal event: %v", err)
-	}
-	if e.Type == storagepb.DELETE {
-		return false
-	}
+func (s *store) delete(key []byte) {
+	mainrev := s.currentRev.main + 1
 
 	ibytes := newRevBytes()
 	revToBytes(revision{main: mainrev, sub: s.currentRev.sub}, ibytes)
@@ -411,11 +482,10 @@ func (s *store) delete(key []byte, mainrev int64) bool {
 		log.Fatalf("storage: cannot marshal event: %v", err)
 	}
 
-	tx.UnsafePut(keyBucketName, ibytes, d)
+	s.tx.UnsafePut(keyBucketName, ibytes, d)
 	err = s.kvindex.Tombstone(key, revision{main: mainrev, sub: s.currentRev.sub})
 	if err != nil {
 		log.Fatalf("storage: cannot tombstone an existing key (%s): %v", string(key), err)
 	}
 	s.currentRev.sub += 1
-	return true
 }

@@ -31,6 +31,8 @@ const noLimit = math.MaxUint64
 
 var errNoLeader = errors.New("no leader")
 
+var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unavailable")
+
 // Possible values for StateType.
 const (
 	StateFollower StateType = iota
@@ -185,12 +187,9 @@ func newRaft(c *Config) *raft {
 		peers = cs.Nodes
 	}
 	r := &raft{
-		id:      c.ID,
-		lead:    None,
-		raftLog: raftlog,
-		// 4MB for now and hard code it
-		// TODO(xiang): add a config arguement into newRaft after we add
-		// the max inflight message field.
+		id:               c.ID,
+		lead:             None,
+		raftLog:          raftlog,
 		maxMsgSize:       c.MaxSizePerMsg,
 		maxInflight:      c.MaxInflightMsgs,
 		prs:              make(map[uint64]*Progress),
@@ -263,6 +262,10 @@ func (r *raft) sendAppend(to uint64) {
 		m.Type = pb.MsgSnap
 		snapshot, err := r.raftLog.snapshot()
 		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				r.logger.Debugf("%x failed to send snapshot to %x because snapshot is temporarily unavailable", r.id, to)
+				return
+			}
 			panic(err) // TODO(bdarnell)
 		}
 		if IsEmptySnap(snapshot) {
@@ -521,6 +524,12 @@ func stepLeader(r *raft, m pb.Message) {
 	case pb.MsgProp:
 		if len(m.Entries) == 0 {
 			r.logger.Panicf("%x stepped empty MsgProp", r.id)
+		}
+		if _, ok := r.prs[r.id]; !ok {
+			// If we are not currently a member of the range (i.e. this node
+			// was removed from the configuration while serving as leader),
+			// drop any new proposals.
+			return
 		}
 		for i, e := range m.Entries {
 			if e.Type == pb.EntryConfChange {

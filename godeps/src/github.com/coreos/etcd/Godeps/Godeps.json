@@ -1,6 +1,6 @@
 {
 	"ImportPath": "github.com/coreos/etcd",
-	"GoVersion": "go1.4.2",
+	"GoVersion": "go1.5",
 	"Packages": [
 		"./..."
 	],
@@ -11,21 +11,29 @@
 			"Rev": "75cd24fc2f2c2a2088577d12123ddee5f54e0675"
 		},
 		{
+			"ImportPath": "github.com/akrennmair/gopcap",
+			"Rev": "00e11033259acb75598ba416495bb708d864a010"
+		},
+		{
 			"ImportPath": "github.com/beorn7/perks/quantile",
 			"Rev": "b965b613227fddccbfffe13eae360ed3fa822f8d"
 		},
 		{
 			"ImportPath": "github.com/bgentry/speakeasy",
-			"Rev": "5dfe43257d1f86b96484e760f2f0c4e2559089c7"
+			"Rev": "36e9cfdd690967f4f690c6edcc9ffacd006014a0"
 		},
 		{
 			"ImportPath": "github.com/boltdb/bolt",
-			"Comment": "v1.0-71-g71f28ea",
-			"Rev": "71f28eaecbebd00604d87bb1de0dae8fcfa54bbd"
+			"Comment": "v1.0-119-g90fef38",
+			"Rev": "90fef389f98027ca55594edd7dbd6e7f3926fdad"
 		},
 		{
 			"ImportPath": "github.com/bradfitz/http2",
 			"Rev": "3e36af6d3af0e56fa3da71099f864933dea3d9fb"
+		},
+		{
+			"ImportPath": "github.com/cheggaaa/pb",
+			"Rev": "da1f27ad1d9509b16f65f52fd9d8138b0f2dc7b2"
 		},
 		{
 			"ImportPath": "github.com/codegangsta/cli",
@@ -80,19 +88,9 @@
 			"Rev": "fc2b8d3a73c4867e51861bbdd5ae3c1f0869dd6a"
 		},
 		{
-			"ImportPath": "github.com/prometheus/client_golang/model",
-			"Comment": "0.5.0-10-ga842dc1",
-			"Rev": "a842dc11e0621c34a71cab634d1d0190a59802a8"
-		},
-		{
 			"ImportPath": "github.com/prometheus/client_golang/prometheus",
-			"Comment": "0.5.0-10-ga842dc1",
-			"Rev": "a842dc11e0621c34a71cab634d1d0190a59802a8"
-		},
-		{
-			"ImportPath": "github.com/prometheus/client_golang/text",
-			"Comment": "0.5.0-10-ga842dc1",
-			"Rev": "a842dc11e0621c34a71cab634d1d0190a59802a8"
+			"Comment": "0.7.0-52-ge51041b",
+			"Rev": "e51041b3fa41cece0dca035740ba6411905be473"
 		},
 		{
 			"ImportPath": "github.com/prometheus/client_model/go",
@@ -100,12 +98,28 @@
 			"Rev": "fa8ad6fec33561be4280a8f0514318c79d7f6cb6"
 		},
 		{
+			"ImportPath": "github.com/prometheus/common/expfmt",
+			"Rev": "ffe929a3f4c4faeaa10f2b9535c2b1be3ad15650"
+		},
+		{
+			"ImportPath": "github.com/prometheus/common/model",
+			"Rev": "ffe929a3f4c4faeaa10f2b9535c2b1be3ad15650"
+		},
+		{
 			"ImportPath": "github.com/prometheus/procfs",
-			"Rev": "ee2372b58cee877abe07cde670d04d3b3bac5ee6"
+			"Rev": "454a56f35412459b5e684fd5ec0f9211b94f002a"
+		},
+		{
+			"ImportPath": "github.com/spacejam/loghisto",
+			"Rev": "323309774dec8b7430187e46cd0793974ccca04a"
 		},
 		{
 			"ImportPath": "github.com/stretchr/testify/assert",
 			"Rev": "9cc77fa25329013ce07362c7742952ff887361f2"
+		},
+		{
+			"ImportPath": "github.com/ugorji/go/codec",
+			"Rev": "f1f1a805ed361a0e078bb537e4ea78cd37dcf065"
 		},
 		{
 			"ImportPath": "github.com/xiang90/probing",
@@ -130,6 +144,10 @@
 		{
 			"ImportPath": "golang.org/x/oauth2",
 			"Rev": "3046bc76d6dfd7d3707f6640f85e42d9c4050f50"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/unix",
+			"Rev": "9c60d1c508f5134d1ca726b4641db998f2523357"
 		},
 		{
 			"ImportPath": "google.golang.org/cloud/compute/metadata",
