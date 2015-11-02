@@ -47,7 +47,8 @@ func TestReadDir(t *testing.T) {
 	}
 	files := []string{"def", "abc", "xyz", "ghi"}
 	for _, f := range files {
-		fh, err := os.Create(filepath.Join(tmpdir, f))
+		var fh *os.File
+		fh, err = os.Create(filepath.Join(tmpdir, f))
 		if err != nil {
 			t.Fatalf("error creating file: %v", err)
 		}
@@ -62,5 +63,22 @@ func TestReadDir(t *testing.T) {
 	wfs := []string{"abc", "def", "ghi", "xyz"}
 	if !reflect.DeepEqual(fs, wfs) {
 		t.Fatalf("ReadDir: got %v, want %v", fs, wfs)
+	}
+}
+
+func TestExist(t *testing.T) {
+	f, err := ioutil.TempFile(os.TempDir(), "fileutil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	if g := Exist(f.Name()); g != true {
+		t.Errorf("exist = %v, want true", g)
+	}
+
+	os.Remove(f.Name())
+	if g := Exist(f.Name()); g != false {
+		t.Errorf("exist = %v, want false", g)
 	}
 }

@@ -45,7 +45,7 @@ import (
 const (
 	tickDuration   = 10 * time.Millisecond
 	clusterName    = "etcd"
-	requestTimeout = 2 * time.Second
+	requestTimeout = 20 * time.Second
 )
 
 var (
@@ -186,7 +186,7 @@ func TestForceNewCluster(t *testing.T) {
 	cancel()
 	// ensure create has been applied in this machine
 	ctx, cancel = context.WithTimeout(context.Background(), requestTimeout)
-	if _, err := kapi.Watcher("/foo", &client.WatcherOptions{AfterIndex: resp.Node.ModifiedIndex - 1}).Next(ctx); err != nil {
+	if _, err = kapi.Watcher("/foo", &client.WatcherOptions{AfterIndex: resp.Node.ModifiedIndex - 1}).Next(ctx); err != nil {
 		t.Fatalf("unexpected watch error: %v", err)
 	}
 	cancel()
@@ -688,7 +688,7 @@ func mustNewMember(t *testing.T, name string, usePeerTLS bool) *member {
 	}
 	m.InitialClusterToken = clusterName
 	m.NewCluster = true
-	m.Transport = mustNewTransport(t, m.PeerTLSInfo)
+	m.ServerConfig.PeerTLSInfo = m.PeerTLSInfo
 	m.ElectionTicks = electionTicks
 	m.TickMs = uint(tickDuration / time.Millisecond)
 	return m
@@ -720,7 +720,6 @@ func (m *member) Clone(t *testing.T) *member {
 		panic(err)
 	}
 	mm.InitialClusterToken = m.InitialClusterToken
-	mm.Transport = mustNewTransport(t, m.PeerTLSInfo)
 	mm.ElectionTicks = m.ElectionTicks
 	mm.PeerTLSInfo = m.PeerTLSInfo
 	return mm

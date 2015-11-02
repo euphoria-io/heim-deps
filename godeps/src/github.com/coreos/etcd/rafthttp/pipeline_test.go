@@ -16,6 +16,7 @@ package rafthttp
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -49,6 +50,28 @@ func TestPipelineSend(t *testing.T) {
 	defer fs.Unlock()
 	if fs.Counts.Success != 1 {
 		t.Errorf("success = %d, want 1", fs.Counts.Success)
+	}
+}
+
+// TestPipelineKeepSendingWhenPostError tests that pipeline can keep
+// sending messages if previous messages meet post error.
+func TestPipelineKeepSendingWhenPostError(t *testing.T) {
+	tr := &respRoundTripper{err: fmt.Errorf("roundtrip error")}
+	picker := mustNewURLPicker(t, []string{"http://localhost:2380"})
+	fs := &stats.FollowerStats{}
+	p := newPipeline(tr, picker, types.ID(2), types.ID(1), types.ID(1), newPeerStatus(types.ID(1)), fs, &fakeRaft{}, nil)
+
+	for i := 0; i < 50; i++ {
+		p.msgc <- raftpb.Message{Type: raftpb.MsgApp}
+	}
+	testutil.WaitSchedule()
+	p.stop()
+
+	// check it send out 50 requests
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.reqCount != 50 {
+		t.Errorf("request count = %d, want 50", tr.reqCount)
 	}
 }
 
@@ -223,21 +246,11 @@ func newRoundTripperBlocker() *roundTripperBlocker {
 		cancel:   make(map[*http.Request]chan struct{}),
 	}
 }
-func (t *roundTripperBlocker) RoundTrip(req *http.Request) (*http.Response, error) {
-	c := make(chan struct{}, 1)
-	t.mu.Lock()
-	t.cancel[req] = c
-	t.mu.Unlock()
-	select {
-	case <-t.unblockc:
-		return &http.Response{StatusCode: http.StatusNoContent, Body: &nopReadCloser{}}, nil
-	case <-c:
-		return nil, errors.New("request canceled")
-	}
-}
+
 func (t *roundTripperBlocker) unblock() {
 	close(t.unblockc)
 }
+
 func (t *roundTripperBlocker) CancelRequest(req *http.Request) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -248,6 +261,9 @@ func (t *roundTripperBlocker) CancelRequest(req *http.Request) {
 }
 
 type respRoundTripper struct {
+	mu       sync.Mutex
+	reqCount int
+
 	code   int
 	header http.Header
 	err    error
@@ -257,6 +273,9 @@ func newRespRoundTripper(code int, err error) *respRoundTripper {
 	return &respRoundTripper{code: code, err: err}
 }
 func (t *respRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.reqCount++
 	return &http.Response{StatusCode: t.code, Header: t.header, Body: &nopReadCloser{}}, t.err
 }
 

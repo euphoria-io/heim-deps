@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/codepipeline"
 )
 
@@ -15,7 +16,7 @@ var _ time.Duration
 var _ bytes.Buffer
 
 func ExampleCodePipeline_AcknowledgeJob() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.AcknowledgeJobInput{
 		JobId: aws.String("JobId"), // Required
@@ -35,7 +36,7 @@ func ExampleCodePipeline_AcknowledgeJob() {
 }
 
 func ExampleCodePipeline_AcknowledgeThirdPartyJob() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.AcknowledgeThirdPartyJobInput{
 		ClientToken: aws.String("ClientToken"),     // Required
@@ -56,7 +57,7 @@ func ExampleCodePipeline_AcknowledgeThirdPartyJob() {
 }
 
 func ExampleCodePipeline_CreateCustomActionType() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.CreateCustomActionTypeInput{
 		Category: aws.String("ActionCategory"), // Required
@@ -103,13 +104,17 @@ func ExampleCodePipeline_CreateCustomActionType() {
 }
 
 func ExampleCodePipeline_CreatePipeline() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.CreatePipelineInput{
 		Pipeline: &codepipeline.PipelineDeclaration{ // Required
 			ArtifactStore: &codepipeline.ArtifactStore{ // Required
 				Location: aws.String("ArtifactStoreLocation"), // Required
 				Type:     aws.String("ArtifactStoreType"),     // Required
+				EncryptionKey: &codepipeline.EncryptionKey{
+					Id:   aws.String("EncryptionKeyId"),   // Required
+					Type: aws.String("EncryptionKeyType"), // Required
+				},
 			},
 			Name:    aws.String("PipelineName"), // Required
 			RoleArn: aws.String("RoleArn"),      // Required
@@ -173,7 +178,7 @@ func ExampleCodePipeline_CreatePipeline() {
 }
 
 func ExampleCodePipeline_DeleteCustomActionType() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.DeleteCustomActionTypeInput{
 		Category: aws.String("ActionCategory"), // Required
@@ -194,7 +199,7 @@ func ExampleCodePipeline_DeleteCustomActionType() {
 }
 
 func ExampleCodePipeline_DeletePipeline() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.DeletePipelineInput{
 		Name: aws.String("PipelineName"), // Required
@@ -213,7 +218,7 @@ func ExampleCodePipeline_DeletePipeline() {
 }
 
 func ExampleCodePipeline_DisableStageTransition() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.DisableStageTransitionInput{
 		PipelineName:   aws.String("PipelineName"),        // Required
@@ -235,7 +240,7 @@ func ExampleCodePipeline_DisableStageTransition() {
 }
 
 func ExampleCodePipeline_EnableStageTransition() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.EnableStageTransitionInput{
 		PipelineName:   aws.String("PipelineName"),        // Required
@@ -256,7 +261,7 @@ func ExampleCodePipeline_EnableStageTransition() {
 }
 
 func ExampleCodePipeline_GetJobDetails() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.GetJobDetailsInput{
 		JobId: aws.String("JobId"), // Required
@@ -275,7 +280,7 @@ func ExampleCodePipeline_GetJobDetails() {
 }
 
 func ExampleCodePipeline_GetPipeline() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.GetPipelineInput{
 		Name:    aws.String("PipelineName"), // Required
@@ -295,7 +300,7 @@ func ExampleCodePipeline_GetPipeline() {
 }
 
 func ExampleCodePipeline_GetPipelineState() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.GetPipelineStateInput{
 		Name: aws.String("PipelineName"), // Required
@@ -314,7 +319,7 @@ func ExampleCodePipeline_GetPipelineState() {
 }
 
 func ExampleCodePipeline_GetThirdPartyJobDetails() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.GetThirdPartyJobDetailsInput{
 		ClientToken: aws.String("ClientToken"),     // Required
@@ -334,7 +339,7 @@ func ExampleCodePipeline_GetThirdPartyJobDetails() {
 }
 
 func ExampleCodePipeline_ListActionTypes() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.ListActionTypesInput{
 		ActionOwnerFilter: aws.String("ActionOwner"),
@@ -354,7 +359,7 @@ func ExampleCodePipeline_ListActionTypes() {
 }
 
 func ExampleCodePipeline_ListPipelines() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.ListPipelinesInput{
 		NextToken: aws.String("NextToken"),
@@ -373,7 +378,7 @@ func ExampleCodePipeline_ListPipelines() {
 }
 
 func ExampleCodePipeline_PollForJobs() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PollForJobsInput{
 		ActionTypeId: &codepipeline.ActionTypeId{ // Required
@@ -402,7 +407,7 @@ func ExampleCodePipeline_PollForJobs() {
 }
 
 func ExampleCodePipeline_PollForThirdPartyJobs() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PollForThirdPartyJobsInput{
 		ActionTypeId: &codepipeline.ActionTypeId{ // Required
@@ -427,7 +432,7 @@ func ExampleCodePipeline_PollForThirdPartyJobs() {
 }
 
 func ExampleCodePipeline_PutActionRevision() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PutActionRevisionInput{
 		ActionName: aws.String("ActionName"), // Required
@@ -453,13 +458,13 @@ func ExampleCodePipeline_PutActionRevision() {
 }
 
 func ExampleCodePipeline_PutJobFailureResult() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PutJobFailureResultInput{
 		FailureDetails: &codepipeline.FailureDetails{ // Required
+			Message:             aws.String("Message"),     // Required
 			Type:                aws.String("FailureType"), // Required
 			ExternalExecutionId: aws.String("ExecutionId"),
-			Message:             aws.String("Message"),
 		},
 		JobId: aws.String("JobId"), // Required
 	}
@@ -477,7 +482,7 @@ func ExampleCodePipeline_PutJobFailureResult() {
 }
 
 func ExampleCodePipeline_PutJobSuccessResult() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PutJobSuccessResultInput{
 		JobId:             aws.String("JobId"), // Required
@@ -506,14 +511,14 @@ func ExampleCodePipeline_PutJobSuccessResult() {
 }
 
 func ExampleCodePipeline_PutThirdPartyJobFailureResult() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PutThirdPartyJobFailureResultInput{
 		ClientToken: aws.String("ClientToken"), // Required
 		FailureDetails: &codepipeline.FailureDetails{ // Required
+			Message:             aws.String("Message"),     // Required
 			Type:                aws.String("FailureType"), // Required
 			ExternalExecutionId: aws.String("ExecutionId"),
-			Message:             aws.String("Message"),
 		},
 		JobId: aws.String("ThirdPartyJobId"), // Required
 	}
@@ -531,7 +536,7 @@ func ExampleCodePipeline_PutThirdPartyJobFailureResult() {
 }
 
 func ExampleCodePipeline_PutThirdPartyJobSuccessResult() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.PutThirdPartyJobSuccessResultInput{
 		ClientToken:       aws.String("ClientToken"),     // Required
@@ -561,7 +566,7 @@ func ExampleCodePipeline_PutThirdPartyJobSuccessResult() {
 }
 
 func ExampleCodePipeline_StartPipelineExecution() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.StartPipelineExecutionInput{
 		Name: aws.String("PipelineName"), // Required
@@ -580,13 +585,17 @@ func ExampleCodePipeline_StartPipelineExecution() {
 }
 
 func ExampleCodePipeline_UpdatePipeline() {
-	svc := codepipeline.New(nil)
+	svc := codepipeline.New(session.New())
 
 	params := &codepipeline.UpdatePipelineInput{
 		Pipeline: &codepipeline.PipelineDeclaration{ // Required
 			ArtifactStore: &codepipeline.ArtifactStore{ // Required
 				Location: aws.String("ArtifactStoreLocation"), // Required
 				Type:     aws.String("ArtifactStoreType"),     // Required
+				EncryptionKey: &codepipeline.EncryptionKey{
+					Id:   aws.String("EncryptionKeyId"),   // Required
+					Type: aws.String("EncryptionKeyType"), // Required
+				},
 			},
 			Name:    aws.String("PipelineName"), // Required
 			RoleArn: aws.String("RoleArn"),      // Required

@@ -292,6 +292,7 @@ type symbol interface {
 type messageSymbol struct {
 	sym                         string
 	hasExtensions, isMessageSet bool
+	hasOneof                    bool
 	getters                     []getterSymbol
 }
 
@@ -299,7 +300,7 @@ type getterSymbol struct {
 	name     string
 	typ      string
 	typeName string // canonical name in proto world; empty for proto.Message and similar
-	genType  bool   // whether typ is a generated type (message/group/enum)
+	genType  bool   // whether typ contains a generated type (message/group/enum)
 }
 
 func (ms *messageSymbol) GenerateAlias(g *Generator, pkg string) {
@@ -321,6 +322,32 @@ func (ms *messageSymbol) GenerateAlias(g *Generator, pkg string) {
 				"{ return (*", remoteSym, ")(m).Unmarshal(buf) }")
 		}
 	}
+	if ms.hasOneof {
+		// Oneofs and public imports do not mix well.
+		// We can make them work okay for the binary format,
+		// but they're going to break weirdly for text/JSON.
+		enc := "_" + ms.sym + "_OneofMarshaler"
+		dec := "_" + ms.sym + "_OneofUnmarshaler"
+		encSig := "(msg " + g.Pkg["proto"] + ".Message, b *" + g.Pkg["proto"] + ".Buffer) error"
+		decSig := "(msg " + g.Pkg["proto"] + ".Message, tag, wire int, b *" + g.Pkg["proto"] + ".Buffer) (bool, error)"
+		g.P("func (m *", ms.sym, ") XXX_OneofFuncs() (func", encSig, ", func", decSig, ", []interface{}) {")
+		g.P("return ", enc, ", ", dec, ", nil")
+		g.P("}")
+
+		g.P("func ", enc, encSig, " {")
+		g.P("m := msg.(*", ms.sym, ")")
+		g.P("m0 := (*", remoteSym, ")(m)")
+		g.P("enc, _, _ := m0.XXX_OneofFuncs()")
+		g.P("return enc(m0, b)")
+		g.P("}")
+
+		g.P("func ", dec, decSig, " {")
+		g.P("m := msg.(*", ms.sym, ")")
+		g.P("m0 := (*", remoteSym, ")(m)")
+		g.P("_, dec, _ := m0.XXX_OneofFuncs()")
+		g.P("return dec(m0, tag, wire, b)")
+		g.P("}")
+	}
 	for _, get := range ms.getters {
 
 		if get.typeName != "" {
@@ -329,15 +356,19 @@ func (ms *messageSymbol) GenerateAlias(g *Generator, pkg string) {
 		typ := get.typ
 		val := "(*" + remoteSym + ")(m)." + get.name + "()"
 		if get.genType {
-			// typ will be "*pkg.T" (message/group) or "pkg.T" (enum).
-			// Either of those might have a "[]" prefix if it is repeated.
-			// Drop the package qualifier since we have hoisted the type into this package.
+			// typ will be "*pkg.T" (message/group) or "pkg.T" (enum)
+			// or "map[t]*pkg.T" (map to message/enum).
+			// The first two of those might have a "[]" prefix if it is repeated.
+			// Drop any package qualifier since we have hoisted the type into this package.
 			rep := strings.HasPrefix(typ, "[]")
 			if rep {
 				typ = typ[2:]
 			}
+			isMap := strings.HasPrefix(typ, "map[")
 			star := typ[0] == '*'
-			typ = typ[strings.Index(typ, ".")+1:]
+			if !isMap { // map types handled lower down
+				typ = typ[strings.Index(typ, ".")+1:]
+			}
 			if star {
 				typ = "*" + typ
 			}
@@ -369,6 +400,30 @@ func (ms *messageSymbol) GenerateAlias(g *Generator, pkg string) {
 				g.P("}")
 				g.P("return s")
 				g.Out()
+				g.P("}")
+				continue
+			}
+			if isMap {
+				// Split map[keyTyp]valTyp.
+				bra, ket := strings.Index(typ, "["), strings.Index(typ, "]")
+				keyTyp, valTyp := typ[bra+1:ket], typ[ket+1:]
+				// Drop any package qualifier.
+				// Only the value type may be foreign.
+				star := valTyp[0] == '*'
+				valTyp = valTyp[strings.Index(valTyp, ".")+1:]
+				if star {
+					valTyp = "*" + valTyp
+				}
+
+				typ := "map[" + keyTyp + "]" + valTyp
+				g.P("func (m *", ms.sym, ") ", get.name, "() ", typ, " {")
+				g.P("o := ", val)
+				g.P("if o == nil { return nil }")
+				g.P("s := make(", typ, ", len(o))")
+				g.P("for k, v := range o {")
+				g.P("s[k] = (", valTyp, ")(v)")
+				g.P("}")
+				g.P("return s")
 				g.P("}")
 				continue
 			}
@@ -859,6 +914,9 @@ func wrapImported(file *descriptor.FileDescriptorProto, g *Generator) (sl []*Imp
 	for _, index := range file.PublicDependency {
 		df := g.fileByName(file.Dependency[index])
 		for _, d := range df.desc {
+			if d.GetOptions().GetMapEntry() {
+				continue
+			}
 			sl = append(sl, &ImportedDescriptor{common{file}, d})
 		}
 		for _, e := range df.enum {
@@ -1125,17 +1183,21 @@ func (g *Generator) generateHeader() {
 			}
 			g.P()
 		}
+		var topMsgs []string
 		g.P("It is generated from these files:")
 		for _, f := range g.genFiles {
 			g.P("\t", f.Name)
+			for _, msg := range f.desc {
+				if msg.parent != nil {
+					continue
+				}
+				topMsgs = append(topMsgs, CamelCaseSlice(msg.TypeName()))
+			}
 		}
 		g.P()
 		g.P("It has these top-level messages:")
-		for _, msg := range g.file.desc {
-			if msg.parent != nil {
-				continue
-			}
-			g.P("\t", CamelCaseSlice(msg.TypeName()))
+		for _, msg := range topMsgs {
+			g.P("\t", msg)
 		}
 		g.P("*/")
 	}
@@ -1417,25 +1479,27 @@ func (g *Generator) goTag(message *Descriptor, field *descriptor.FieldDescriptor
 			name = name[i+1:]
 		}
 	}
-	if name == CamelCase(fieldName) {
-		name = ""
-	} else {
-		name = ",name=" + name
-	}
+	name = ",name=" + name
 	if message.proto3() {
 		// We only need the extra tag for []byte fields;
 		// no need to add noise for the others.
 		if *field.Type == descriptor.FieldDescriptorProto_TYPE_BYTES {
 			name += ",proto3"
 		}
+
 	}
-	return strconv.Quote(fmt.Sprintf("%s,%d,%s%s%s%s%s",
+	oneof := ""
+	if field.OneofIndex != nil {
+		oneof = ",oneof"
+	}
+	return strconv.Quote(fmt.Sprintf("%s,%d,%s%s%s%s%s%s",
 		wiretype,
 		field.GetNumber(),
 		optrepreq,
 		packed,
 		name,
 		enum,
+		oneof,
 		defaultValue))
 }
 
@@ -1570,18 +1634,36 @@ func (g *Generator) generateMessage(message *Descriptor) {
 	g.P("type ", ccTypeName, " struct {")
 	g.In()
 
-	allocName := func(basis string) string {
-		n := CamelCase(basis)
-		for usedNames[n] {
-			n += "_"
+	// allocNames finds a conflict-free variation of the given strings,
+	// consistently mutating their suffixes.
+	// It returns the same number of strings.
+	allocNames := func(ns ...string) []string {
+	Loop:
+		for {
+			for _, n := range ns {
+				if usedNames[n] {
+					for i := range ns {
+						ns[i] += "_"
+					}
+					continue Loop
+				}
+			}
+			for _, n := range ns {
+				usedNames[n] = true
+			}
+			return ns
 		}
-		usedNames[n] = true
-		return n
 	}
 
 	for i, field := range message.Field {
-		fieldName := allocName(*field.Name)
-		fieldGetterName := fieldName
+		// Allocate the getter and the field at the same time so name
+		// collisions create field/method consistent names.
+		// TODO: This allocation occurs based on the order of the fields
+		// in the proto file, meaning that a change in the field
+		// ordering can change generated Method/Field names.
+		base := CamelCase(*field.Name)
+		ns := allocNames(base, "Get"+base)
+		fieldName, fieldGetterName := ns[0], ns[1]
 		typename, wiretype := g.GoType(message, field)
 		jsonName := *field.Name
 		tag := fmt.Sprintf("protobuf:%s json:%q", g.goTag(message, field, wiretype), jsonName+",omitempty")
@@ -1592,7 +1674,7 @@ func (g *Generator) generateMessage(message *Descriptor) {
 		oneof := field.OneofIndex != nil
 		if oneof && oneofFieldName[*field.OneofIndex] == "" {
 			odp := message.OneofDecl[int(*field.OneofIndex)]
-			fname := allocName(odp.GetName())
+			fname := allocNames(CamelCase(odp.GetName()))[0]
 
 			// This is the first field of a oneof we haven't seen before.
 			// Generate the union field.
@@ -1608,7 +1690,8 @@ func (g *Generator) generateMessage(message *Descriptor) {
 			dname := "is" + ccTypeName + "_" + fname
 			oneofFieldName[*field.OneofIndex] = fname
 			oneofDisc[*field.OneofIndex] = dname
-			g.P(fname, " ", dname, " `protobuf_oneof:\"", odp.GetName(), "\"`")
+			tag := `protobuf_oneof:"` + odp.GetName() + `"`
+			g.P(fname, " ", dname, " `", tag, "`")
 		}
 
 		if *field.Type == descriptor.FieldDescriptorProto_TYPE_MESSAGE {
@@ -1650,13 +1733,13 @@ func (g *Generator) generateMessage(message *Descriptor) {
 			for {
 				ok := true
 				for _, desc := range message.nested {
-					if strings.Join(desc.TypeName(), "_") == tname {
+					if CamelCaseSlice(desc.TypeName()) == tname {
 						ok = false
 						break
 					}
 				}
 				for _, enum := range message.enums {
-					if strings.Join(enum.TypeName(), "_") == tname {
+					if CamelCaseSlice(enum.TypeName()) == tname {
 						ok = false
 						break
 					}
@@ -1869,7 +1952,7 @@ func (g *Generator) generateMessage(message *Descriptor) {
 		if t, ok := mapFieldTypes[field]; ok {
 			typename = t
 		}
-		mname := "Get" + fieldGetterNames[field]
+		mname := fieldGetterNames[field]
 		star := ""
 		if needsStar(*field.Type) && typename[0] == '*' {
 			typename = typename[1:]
@@ -2001,7 +2084,13 @@ func (g *Generator) generateMessage(message *Descriptor) {
 	}
 
 	if !message.group {
-		ms := &messageSymbol{sym: ccTypeName, hasExtensions: hasExtensions, isMessageSet: isMessageSet, getters: getters}
+		ms := &messageSymbol{
+			sym:           ccTypeName,
+			hasExtensions: hasExtensions,
+			isMessageSet:  isMessageSet,
+			hasOneof:      len(message.OneofDecl) > 0,
+			getters:       getters,
+		}
 		g.file.addExport(message, ms)
 	}
 

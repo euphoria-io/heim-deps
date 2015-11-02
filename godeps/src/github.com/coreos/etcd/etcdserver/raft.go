@@ -52,6 +52,8 @@ const (
 )
 
 var (
+	// protects raftStatus
+	raftStatusMu sync.Mutex
 	// indirection for expvar func interface
 	// expvar panics when publishing duplicate name
 	// expvar does not support remove a registered name
@@ -62,7 +64,11 @@ var (
 
 func init() {
 	raft.SetLogger(capnslog.NewPackageLogger("github.com/coreos/etcd", "raft"))
-	expvar.Publish("raft.status", expvar.Func(func() interface{} { return raftStatus() }))
+	expvar.Publish("raft.status", expvar.Func(func() interface{} {
+		raftStatusMu.Lock()
+		defer raftStatusMu.Unlock()
+		return raftStatus()
+	}))
 }
 
 type RaftTimer interface {
@@ -103,7 +109,7 @@ type raftNode struct {
 
 	// utility
 	ticker      <-chan time.Time
-	raftStorage *raft.MemoryStorage
+	raftStorage *raftStorage
 	storage     Storage
 	// transport specifies the transport to send and receive msgs to members.
 	// Sending messages MUST NOT block. It is okay to drop messages, since
@@ -120,6 +126,7 @@ type raftNode struct {
 // TODO: Ideally raftNode should get rid of the passed in server structure.
 func (r *raftNode) start(s *EtcdServer) {
 	r.s = s
+	r.raftStorage.raftStarted = true
 	r.applyc = make(chan apply)
 	r.stopped = make(chan struct{})
 	r.done = make(chan struct{})
@@ -238,7 +245,7 @@ func advanceTicksForElection(n raft.Node, electionTicks int) {
 	}
 }
 
-func startNode(cfg *ServerConfig, cl *cluster, ids []types.ID) (id types.ID, n raft.Node, s *raft.MemoryStorage, w *wal.WAL) {
+func startNode(cfg *ServerConfig, cl *cluster, ids []types.ID) (id types.ID, n raft.Node, s *raftStorage, w *wal.WAL) {
 	var err error
 	member := cl.MemberByName(cfg.Name)
 	metadata := pbutil.MustMarshal(
@@ -263,7 +270,7 @@ func startNode(cfg *ServerConfig, cl *cluster, ids []types.ID) (id types.ID, n r
 	}
 	id = member.ID
 	plog.Infof("starting member %s in cluster %s", id, cl.ID())
-	s = raft.NewMemoryStorage()
+	s = newRaftStorage()
 	c := &raft.Config{
 		ID:              uint64(id),
 		ElectionTick:    cfg.ElectionTicks,
@@ -273,12 +280,14 @@ func startNode(cfg *ServerConfig, cl *cluster, ids []types.ID) (id types.ID, n r
 		MaxInflightMsgs: maxInflightMsgs,
 	}
 	n = raft.StartNode(c, peers)
+	raftStatusMu.Lock()
 	raftStatus = n.Status
+	raftStatusMu.Unlock()
 	advanceTicksForElection(n, c.ElectionTick)
 	return
 }
 
-func restartNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *cluster, raft.Node, *raft.MemoryStorage, *wal.WAL) {
+func restartNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *cluster, raft.Node, *raftStorage, *wal.WAL) {
 	var walsnap walpb.Snapshot
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
@@ -288,7 +297,7 @@ func restartNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *clust
 	plog.Infof("restarting member %s in cluster %s at commit index %d", id, cid, st.Commit)
 	cl := newCluster("")
 	cl.SetID(cid)
-	s := raft.NewMemoryStorage()
+	s := newRaftStorage()
 	if snapshot != nil {
 		s.ApplySnapshot(*snapshot)
 	}
@@ -303,12 +312,14 @@ func restartNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *clust
 		MaxInflightMsgs: maxInflightMsgs,
 	}
 	n := raft.RestartNode(c)
+	raftStatusMu.Lock()
 	raftStatus = n.Status
+	raftStatusMu.Unlock()
 	advanceTicksForElection(n, c.ElectionTick)
 	return id, cl, n, s, w
 }
 
-func restartAsStandaloneNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *cluster, raft.Node, *raft.MemoryStorage, *wal.WAL) {
+func restartAsStandaloneNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *cluster, raft.Node, *raftStorage, *wal.WAL) {
 	var walsnap walpb.Snapshot
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
@@ -340,7 +351,7 @@ func restartAsStandaloneNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (type
 	plog.Printf("forcing restart of member %s in cluster %s at commit index %d", id, cid, st.Commit)
 	cl := newCluster("")
 	cl.SetID(cid)
-	s := raft.NewMemoryStorage()
+	s := newRaftStorage()
 	if snapshot != nil {
 		s.ApplySnapshot(*snapshot)
 	}
@@ -382,6 +393,8 @@ func getIDs(snap *raftpb.Snapshot, ents []raftpb.Entry) []uint64 {
 			ids[cc.NodeID] = true
 		case raftpb.ConfChangeRemoveNode:
 			delete(ids, cc.NodeID)
+		case raftpb.ConfChangeUpdateNode:
+			// do nothing
 		default:
 			plog.Panicf("ConfChange Type should be either ConfChangeAddNode or ConfChangeRemoveNode!")
 		}

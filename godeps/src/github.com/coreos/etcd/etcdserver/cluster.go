@@ -220,9 +220,19 @@ func (c *cluster) SetID(id types.ID) { c.id = id }
 func (c *cluster) SetStore(st store.Store) { c.store = st }
 
 func (c *cluster) Recover() {
+	c.Lock()
+	defer c.Unlock()
+
 	c.members, c.removed = membersFromStore(c.store)
 	c.version = clusterVersionFromStore(c.store)
 	MustDetectDowngrade(c.version)
+
+	for _, m := range c.members {
+		plog.Infof("added member %s %v to cluster %s from store", m.ID, m.PeerURLs, c.id)
+	}
+	if c.version != nil {
+		plog.Infof("set the cluster version to %v from store", version.Cluster(c.version.String()))
+	}
 }
 
 // ValidateConfigurationChange takes a proposed ConfChange and
@@ -317,20 +327,21 @@ func (c *cluster) RemoveMember(id types.ID) {
 	c.removed[id] = true
 }
 
-func (c *cluster) UpdateAttributes(id types.ID, attr Attributes) {
+func (c *cluster) UpdateAttributes(id types.ID, attr Attributes) bool {
 	c.Lock()
 	defer c.Unlock()
 	if m, ok := c.members[id]; ok {
 		m.Attributes = attr
-		return
+		return true
 	}
 	_, ok := c.removed[id]
 	if ok {
-		plog.Debugf("skipped updating attributes of removed member %s", id)
+		plog.Warningf("skipped updating attributes of removed member %s", id)
 	} else {
 		plog.Panicf("error updating attributes of unknown member %s", id)
 	}
 	// TODO: update store in this function
+	return false
 }
 
 func (c *cluster) UpdateRaftAttributes(id types.ID, raftAttr RaftAttributes) {
@@ -368,6 +379,58 @@ func (c *cluster) SetVersion(ver *semver.Version) {
 	MustDetectDowngrade(c.version)
 }
 
+func (c *cluster) isReadyToAddNewMember() bool {
+	nmembers := 1
+	nstarted := 0
+
+	for _, member := range c.members {
+		if member.IsStarted() {
+			nstarted++
+		}
+		nmembers++
+	}
+
+	if nstarted == 1 && nmembers == 2 {
+		// a case of adding a new node to 1-member cluster for restoring cluster data
+		// https://github.com/coreos/etcd/blob/master/Documentation/admin_guide.md#restoring-the-cluster
+
+		plog.Debugf("The number of started member is 1. This cluster can accept add member request.")
+		return true
+	}
+
+	nquorum := nmembers/2 + 1
+	if nstarted < nquorum {
+		plog.Warningf("Reject add member request: the number of started member (%d) will be less than the quorum number of the cluster (%d)", nstarted, nquorum)
+		return false
+	}
+
+	return true
+}
+
+func (c *cluster) isReadyToRemoveMember(id uint64) bool {
+	nmembers := 0
+	nstarted := 0
+
+	for _, member := range c.members {
+		if uint64(member.ID) == id {
+			continue
+		}
+
+		if member.IsStarted() {
+			nstarted++
+		}
+		nmembers++
+	}
+
+	nquorum := nmembers/2 + 1
+	if nstarted < nquorum {
+		plog.Warningf("Reject remove member request: the number of started member (%d) will be less than the quorum number of the cluster (%d)", nstarted, nquorum)
+		return false
+	}
+
+	return true
+}
+
 func membersFromStore(st store.Store) (map[types.ID]*Member, map[types.ID]bool) {
 	members := make(map[types.ID]*Member)
 	removed := make(map[types.ID]bool)
@@ -379,7 +442,8 @@ func membersFromStore(st store.Store) (map[types.ID]*Member, map[types.ID]bool) 
 		plog.Panicf("get storeMembers should never fail: %v", err)
 	}
 	for _, n := range e.Node.Nodes {
-		m, err := nodeToMember(n)
+		var m *Member
+		m, err = nodeToMember(n)
 		if err != nil {
 			plog.Panicf("nodeToMember should never fail: %v", err)
 		}

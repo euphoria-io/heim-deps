@@ -16,23 +16,27 @@ package etcdserver
 
 import (
 	"fmt"
-	"net/http"
 	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/coreos/etcd/pkg/netutil"
+	"github.com/coreos/etcd/pkg/transport"
 	"github.com/coreos/etcd/pkg/types"
 )
 
 // ServerConfig holds the configuration of etcd as taken from the command line or discovery.
 type ServerConfig struct {
-	Name                string
-	DiscoveryURL        string
-	DiscoveryProxy      string
-	ClientURLs          types.URLs
-	PeerURLs            types.URLs
-	DataDir             string
+	Name           string
+	DiscoveryURL   string
+	DiscoveryProxy string
+	ClientURLs     types.URLs
+	PeerURLs       types.URLs
+	DataDir        string
+	// DedicatedWALDir config will make the etcd to write the WAL to the WALDir
+	// rather than the dataDir/member/wal.
+	DedicatedWALDir     string
 	SnapCount           uint64
 	MaxSnapFiles        uint
 	MaxWALFiles         uint
@@ -40,12 +44,14 @@ type ServerConfig struct {
 	InitialClusterToken string
 	NewCluster          bool
 	ForceNewCluster     bool
-	Transport           *http.Transport
+	PeerTLSInfo         transport.TLSInfo
 
 	TickMs        uint
 	ElectionTicks int
 
 	V3demo bool
+
+	StrictReconfigCheck bool
 }
 
 // VerifyBootstrapConfig sanity-checks the initial config for bootstrap case
@@ -97,7 +103,8 @@ func (c *ServerConfig) verifyLocalMember(strict bool) error {
 	urls.Sort()
 	if strict {
 		if !netutil.URLStringsEqual(apurls, urls.StringSlice()) {
-			return fmt.Errorf("advertise URLs of %q do not match in --initial-advertise-peer-urls %s and --initial-cluster %s", c.Name, apurls, urls.StringSlice())
+			umap := map[string]types.URLs{c.Name: c.PeerURLs}
+			return fmt.Errorf("--initial-cluster must include %s given --initial-advertise-peer-urls=%s", types.URLsMap(umap).String(), strings.Join(apurls, ","))
 		}
 	}
 	return nil
@@ -105,9 +112,16 @@ func (c *ServerConfig) verifyLocalMember(strict bool) error {
 
 func (c *ServerConfig) MemberDir() string { return path.Join(c.DataDir, "member") }
 
-func (c *ServerConfig) WALDir() string { return path.Join(c.MemberDir(), "wal") }
+func (c *ServerConfig) WALDir() string {
+	if c.DedicatedWALDir != "" {
+		return c.DedicatedWALDir
+	}
+	return path.Join(c.MemberDir(), "wal")
+}
 
 func (c *ServerConfig) SnapDir() string { return path.Join(c.MemberDir(), "snap") }
+
+func (c *ServerConfig) StorageDir() string { return path.Join(c.MemberDir(), "storage") }
 
 func (c *ServerConfig) ShouldDiscover() bool { return c.DiscoveryURL != "" }
 
@@ -116,6 +130,12 @@ func (c *ServerConfig) ReqTimeout() time.Duration {
 	// 5s for queue waiting, computation and disk IO delay
 	// + 2 * election timeout for possible leader election
 	return 5*time.Second + 2*time.Duration(c.ElectionTicks)*time.Duration(c.TickMs)*time.Millisecond
+}
+
+func (c *ServerConfig) peerDialTimeout() time.Duration {
+	// 1s for queue wait and system delay
+	// + one RTT, which is smaller than 1/5 election timeout
+	return time.Second + time.Duration(c.ElectionTicks)*time.Duration(c.TickMs)*time.Millisecond/5
 }
 
 func (c *ServerConfig) PrintWithInitial() { c.print(true) }
@@ -129,6 +149,9 @@ func (c *ServerConfig) print(initial bool) {
 	}
 	plog.Infof("data dir = %s", c.DataDir)
 	plog.Infof("member dir = %s", c.MemberDir())
+	if c.DedicatedWALDir != "" {
+		plog.Infof("dedicated WAL dir = %s", c.DedicatedWALDir)
+	}
 	plog.Infof("heartbeat = %dms", c.TickMs)
 	plog.Infof("election = %dms", c.ElectionTicks*int(c.TickMs))
 	plog.Infof("snapshot count = %d", c.SnapCount)

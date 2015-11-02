@@ -1,3 +1,17 @@
+// Copyright 2015 CoreOS, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package storage
 
 import (
@@ -7,6 +21,10 @@ import (
 
 func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struct{}) {
 	defer s.wg.Done()
+
+	totalStart := time.Now()
+	defer dbCompactionTotalDurations.Observe(float64(time.Now().Sub(totalStart) / time.Millisecond))
+
 	end := make([]byte, 8)
 	binary.BigEndian.PutUint64(end, uint64(compactMainRev+1))
 
@@ -15,6 +33,7 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 	for {
 		var rev revision
 
+		start := time.Now()
 		tx := s.b.BatchTx()
 		tx.Lock()
 
@@ -26,7 +45,7 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 			}
 		}
 
-		if len(keys) == 0 {
+		if len(keys) < int(batchsize) {
 			rbytes := make([]byte, 8+1+8)
 			revToBytes(revision{main: compactMainRev}, rbytes)
 			tx.UnsafePut(metaBucketName, finishedCompactKeyName, rbytes)
@@ -37,6 +56,7 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 		// update last
 		revToBytes(revision{main: rev.main, sub: rev.sub + 1}, last)
 		tx.Unlock()
+		dbCompactionPauseDurations.Observe(float64(time.Now().Sub(start) / time.Millisecond))
 
 		select {
 		case <-time.After(100 * time.Millisecond):

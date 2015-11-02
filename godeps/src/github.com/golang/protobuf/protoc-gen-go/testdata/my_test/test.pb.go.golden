@@ -184,9 +184,11 @@ type Request struct {
 	// This is a map field. It will generate map[int32]string.
 	NameMapping map[int32]string `protobuf:"bytes,14,rep,name=name_mapping" json:"name_mapping,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// This is a map field whose value type is a message.
-	MsgMapping       map[int64]*Reply `protobuf:"bytes,15,rep,name=msg_mapping" json:"msg_mapping,omitempty" protobuf_key:"zigzag64,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Reset_           *int32           `protobuf:"varint,12,opt,name=reset" json:"reset,omitempty"`
-	XXX_unrecognized []byte           `json:"-"`
+	MsgMapping map[int64]*Reply `protobuf:"bytes,15,rep,name=msg_mapping" json:"msg_mapping,omitempty" protobuf_key:"zigzag64,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Reset_     *int32           `protobuf:"varint,12,opt,name=reset" json:"reset,omitempty"`
+	// This field should not conflict with any getters.
+	GetKey_          *string `protobuf:"bytes,16,opt,name=get_key" json:"get_key,omitempty"`
+	XXX_unrecognized []byte  `json:"-"`
 }
 
 func (m *Request) Reset()         { *m = Request{} }
@@ -251,6 +253,13 @@ func (m *Request) GetReset_() int32 {
 		return *m.Reset_
 	}
 	return 0
+}
+
+func (m *Request) GetGetKey_() string {
+	if m != nil && m.GetKey_ != nil {
+		return *m.GetKey_
+	}
+	return ""
 }
 
 type Request_SomeGroup struct {
@@ -489,34 +498,34 @@ type isCommunique_Union interface {
 }
 
 type Communique_Number struct {
-	Number int32 `protobuf:"varint,5,opt,name=number"`
+	Number int32 `protobuf:"varint,5,opt,name=number,oneof"`
 }
 type Communique_Name struct {
-	Name string `protobuf:"bytes,6,opt,name=name"`
+	Name string `protobuf:"bytes,6,opt,name=name,oneof"`
 }
 type Communique_Data struct {
-	Data []byte `protobuf:"bytes,7,opt,name=data"`
+	Data []byte `protobuf:"bytes,7,opt,name=data,oneof"`
 }
 type Communique_TempC struct {
-	TempC float64 `protobuf:"fixed64,8,opt,name=temp_c"`
+	TempC float64 `protobuf:"fixed64,8,opt,name=temp_c,oneof"`
 }
 type Communique_Height struct {
-	Height float32 `protobuf:"fixed32,9,opt,name=height"`
+	Height float32 `protobuf:"fixed32,9,opt,name=height,oneof"`
 }
 type Communique_Today struct {
-	Today Days `protobuf:"varint,10,opt,name=today,enum=my.test.Days"`
+	Today Days `protobuf:"varint,10,opt,name=today,enum=my.test.Days,oneof"`
 }
 type Communique_Maybe struct {
-	Maybe bool `protobuf:"varint,11,opt,name=maybe"`
+	Maybe bool `protobuf:"varint,11,opt,name=maybe,oneof"`
 }
 type Communique_Delta_ struct {
-	Delta int32 `protobuf:"zigzag32,12,opt,name=delta"`
+	Delta int32 `protobuf:"zigzag32,12,opt,name=delta,oneof"`
 }
 type Communique_Msg struct {
-	Msg *Reply `protobuf:"bytes,13,opt,name=msg"`
+	Msg *Reply `protobuf:"bytes,13,opt,name=msg,oneof"`
 }
 type Communique_Somegroup struct {
-	Somegroup *Communique_SomeGroup `protobuf:"group,14,opt,name=SomeGroup"`
+	Somegroup *Communique_SomeGroup `protobuf:"group,14,opt,name=SomeGroup,oneof"`
 }
 
 func (*Communique_Number) isCommunique_Union()    {}

@@ -82,7 +82,7 @@ X-Raft-Term: 1
 - `X-Raft-Index` is similar to the etcd index but is for the underlying raft protocol
 - `X-Raft-Term` is an integer that will increase whenever an etcd master election happens in the cluster. If this number is increasing rapidly, you may need to tune the election timeout. See the [tuning][tuning] section for details.
 
-[tuning]: #tuning
+[tuning]: tuning.md
 
 
 ### Get the value of a key
@@ -359,7 +359,7 @@ curl 'http://127.0.0.1:2379/v2/keys/foo?wait=true&waitIndex=2008'
 #### Connection being closed prematurely
 
 The server may close a long polling connection before emitting any events.
-This can happend due to a timeout or the server being shutdown.
+This can happen due to a timeout or the server being shutdown.
 Since the HTTP header is sent immediately upon accepting the connection, the response will be seen as empty: `200 OK` and empty body.
 The clients should be prepared to deal with this scenario and retry the watch.
 
@@ -472,7 +472,7 @@ curl http://127.0.0.1:2379/v2/keys/dir -XPUT -d ttl=30 -d dir=true -d prevExist=
 Keys that are under this directory work as usual, but when the directory expires, a watcher on a key under the directory will get an expire event:
 
 ```sh
-curl 'http://127.0.0.1:2379/v2/keys/dir/asdf?wait=true'
+curl 'http://127.0.0.1:2379/v2/keys/dir?wait=true'
 ```
 
 ```json
@@ -506,7 +506,7 @@ The current comparable conditions are:
 
 2. `prevIndex` - checks the previous modifiedIndex of the key.
 
-3. `prevExist` - checks existence of the key: if `prevExist` is true, it is an `update` request; if prevExist is `false`, it is a `create` request.
+3. `prevExist` - checks existence of the key: if `prevExist` is true, it is an `update` request; if `prevExist` is `false`, it is a `create` request.
 
 Here is a simple example.
 Let's create a key-value pair first: `foo=one`.

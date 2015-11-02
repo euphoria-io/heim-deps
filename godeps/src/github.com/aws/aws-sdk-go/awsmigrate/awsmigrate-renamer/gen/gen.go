@@ -10,7 +10,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/aws/aws-sdk-go/internal/model/api"
+	"github.com/aws/aws-sdk-go/private/model/api"
 )
 
 type pkg struct {
@@ -127,7 +127,6 @@ func load(file string) *pkg {
 	p.oldAPI.Attach(file)
 	p.oldAPI.Setup()
 
-	p.newAPI.NoInflections = true
 	p.newAPI.Attach(file)
 	p.newAPI.Setup()
 

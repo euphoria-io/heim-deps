@@ -4,7 +4,7 @@ etcd supports SSL/TLS as well as authentication through client certificates, bot
 
 To get up and running you first need to have a CA certificate and a signed key pair for one member. It is recommended to create and sign a new key pair for every member in a cluster.
 
-For convenience the [etcd-ca](https://github.com/coreos/etcd-ca) tool provides an easy interface to certificate generation, alternatively this site provides a good reference on how to generate self-signed key pairs:
+For convenience the [cfssl](https://github.com/cloudflare/cfssl) tool provides an easy interface to certificate generation, and we provide a full example using the tool at [here](../hack/tls-setup). Alternatively this site provides a good reference on how to generate self-signed key pairs:
 
 http://www.g-loaded.eu/2005/11/10/be-your-own-ca/
 
@@ -97,7 +97,7 @@ $ curl --cacert /path/to/ca.crt --cert /path/to/client.crt --key /path/to/client
   -L https://127.0.0.1:2379/v2/keys/foo -XPUT -d value=bar -v
 ```
 
-You should able to see:
+You should be able to see:
 
 ```
 ...
@@ -138,7 +138,7 @@ $ etcd -name infra1 -data-dir infra1 \
 
 # member2
 $ etcd -name infra2 -data-dir infra2 \
-  -peer-client-cert-atuh -peer-trusted-ca-file=/path/to/ca.crt -peer-cert-file=/path/to/member2.crt -peer-key-file=/path/to/member2.key \
+  -peer-client-cert-auth -peer-trusted-ca-file=/path/to/ca.crt -peer-cert-file=/path/to/member2.crt -peer-key-file=/path/to/member2.key \
   -initial-advertise-peer-urls=https://10.0.1.11:2380 -listen-peer-urls=https://10.0.1.11:2380 \
   -discovery ${DISCOVERY_URL}
 ```
@@ -152,7 +152,7 @@ The etcd members will form a cluster and all communication between members in th
 The internal protocol of etcd v2.0.x uses a lot of short-lived HTTP connections.
 So, when enabling TLS you may need to increase the heartbeat interval and election timeouts to reduce internal cluster connection churn.
 A reasonable place to start are these values: ` --heartbeat-interval 500 --election-timeout 2500`.
-This issues is resolved in the etcd v2.1.x series of releases which uses fewer connections.
+These issues are resolved in the etcd v2.1.x series of releases which uses fewer connections.
 
 ### I'm seeing a SSLv3 alert handshake failure when using SSL client authentication?
 

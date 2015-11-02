@@ -57,6 +57,9 @@ type Storage interface {
 	// first log entry is not available).
 	FirstIndex() (uint64, error)
 	// Snapshot returns the most recent snapshot.
+	// If snapshot is temporarily unavailable, it should return ErrTemporarilyUnavailable,
+	// so raft state machine could know that Storage needs some time to prepare
+	// snapshot and call Snapshot later.
 	Snapshot() (pb.Snapshot, error)
 }
 
@@ -190,7 +193,7 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 	return ms.snapshot, nil
 }
 
-// Compact discards all log entries prior to i.
+// Compact discards all log entries prior to compactIndex.
 // It is the application's responsibility to not attempt to compact an index
 // greater than raftLog.applied.
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {

@@ -17,6 +17,7 @@ package etcdserver
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"path"
 	"reflect"
@@ -451,6 +452,7 @@ func TestApplyConfChangeError(t *testing.T) {
 		srv := &EtcdServer{
 			r:       raftNode{Node: n},
 			cluster: cl,
+			cfg:     &ServerConfig{},
 		}
 		_, err := srv.applyConfChange(tt.cc, nil)
 		if err != tt.werr {
@@ -521,7 +523,7 @@ func TestDoProposal(t *testing.T) {
 			r: raftNode{
 				Node:        newNodeCommitter(),
 				storage:     &storageRecorder{},
-				raftStorage: raft.NewMemoryStorage(),
+				raftStorage: newRaftStorage(),
 				transport:   &nopTransporter{},
 			},
 			store:    st,
@@ -603,11 +605,18 @@ func TestSync(t *testing.T) {
 		reqIDGen: idutil.NewGenerator(0, time.Time{}),
 	}
 	// check that sync is non-blocking
-	timer := time.AfterFunc(time.Second, func() {
-		t.Fatalf("sync should be non-blocking but did not return after 1s!")
-	})
-	srv.sync(10 * time.Second)
-	timer.Stop()
+	done := make(chan struct{})
+	go func() {
+		srv.sync(10 * time.Second)
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sync should be non-blocking but did not return after 1s!")
+	}
+
 	testutil.WaitSchedule()
 
 	action := n.Action()
@@ -636,11 +645,17 @@ func TestSyncTimeout(t *testing.T) {
 		reqIDGen: idutil.NewGenerator(0, time.Time{}),
 	}
 	// check that sync is non-blocking
-	timer := time.AfterFunc(time.Second, func() {
-		t.Fatalf("sync should be non-blocking but did not return after 1s!")
-	})
-	srv.sync(0)
-	timer.Stop()
+	done := make(chan struct{})
+	go func() {
+		srv.sync(0)
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sync should be non-blocking but did not return after 1s!")
+	}
 
 	// give time for goroutine in sync to cancel
 	testutil.WaitSchedule()
@@ -660,7 +675,7 @@ func TestSyncTrigger(t *testing.T) {
 		cfg: &ServerConfig{TickMs: 1},
 		r: raftNode{
 			Node:        n,
-			raftStorage: raft.NewMemoryStorage(),
+			raftStorage: newRaftStorage(),
 			transport:   &nopTransporter{},
 			storage:     &storageRecorder{},
 		},
@@ -697,13 +712,56 @@ func TestSyncTrigger(t *testing.T) {
 	}
 }
 
+func TestCreateRaftSnapshot(t *testing.T) {
+	s := newRaftStorage()
+	s.Append([]raftpb.Entry{{Index: 1, Term: 1}})
+	st := &storeRecorder{}
+	srv := &EtcdServer{
+		r: raftNode{
+			raftStorage: s,
+		},
+		store: st,
+	}
+
+	snap := srv.createRaftSnapshot(1, raftpb.ConfState{Nodes: []uint64{1}})
+	wdata, err := st.Save()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsnap := raftpb.Snapshot{
+		Metadata: raftpb.SnapshotMetadata{
+			Index:     1,
+			Term:      1,
+			ConfState: raftpb.ConfState{Nodes: []uint64{1}},
+		},
+		Data: wdata,
+	}
+	if !reflect.DeepEqual(snap, wsnap) {
+		t.Errorf("snap = %+v, want %+v", snap, wsnap)
+	}
+
+	gaction := st.Action()
+	// the third action is store.Save used in testing
+	if len(gaction) != 3 {
+		t.Fatalf("len(action) = %d, want 3", len(gaction))
+	}
+	if !reflect.DeepEqual(gaction[0], testutil.Action{Name: "Clone"}) {
+		t.Errorf("action = %s, want Clone", gaction[0])
+	}
+	if !reflect.DeepEqual(gaction[1], testutil.Action{Name: "SaveNoCopy"}) {
+		t.Errorf("action = %s, want SaveNoCopy", gaction[1])
+	}
+
+}
+
 // snapshot should snapshot the store and cut the persistent
 func TestSnapshot(t *testing.T) {
-	s := raft.NewMemoryStorage()
+	s := newRaftStorage()
 	s.Append([]raftpb.Entry{{Index: 1}})
 	st := &storeRecorder{}
 	p := &storageRecorder{}
 	srv := &EtcdServer{
+		cfg: &ServerConfig{},
 		r: raftNode{
 			Node:        &nodeRecorder{},
 			raftStorage: s,
@@ -742,7 +800,7 @@ func TestTriggerSnap(t *testing.T) {
 		snapCount: uint64(snapc),
 		r: raftNode{
 			Node:        newNodeCommitter(),
-			raftStorage: raft.NewMemoryStorage(),
+			raftStorage: newRaftStorage(),
 			storage:     p,
 			transport:   &nopTransporter{},
 		},
@@ -778,11 +836,12 @@ func TestRecvSnapshot(t *testing.T) {
 	cl := newCluster("abc")
 	cl.SetStore(store.New())
 	s := &EtcdServer{
+		cfg: &ServerConfig{},
 		r: raftNode{
 			Node:        n,
 			transport:   &nopTransporter{},
 			storage:     p,
-			raftStorage: raft.NewMemoryStorage(),
+			raftStorage: newRaftStorage(),
 		},
 		store:   st,
 		cluster: cl,
@@ -811,8 +870,9 @@ func TestApplySnapshotAndCommittedEntries(t *testing.T) {
 	st := &storeRecorder{}
 	cl := newCluster("abc")
 	cl.SetStore(store.New())
-	storage := raft.NewMemoryStorage()
+	storage := newRaftStorage()
 	s := &EtcdServer{
+		cfg: &ServerConfig{},
 		r: raftNode{
 			Node:        n,
 			storage:     &storageRecorder{},
@@ -859,10 +919,11 @@ func TestAddMember(t *testing.T) {
 	s := &EtcdServer{
 		r: raftNode{
 			Node:        n,
-			raftStorage: raft.NewMemoryStorage(),
+			raftStorage: newRaftStorage(),
 			storage:     &storageRecorder{},
 			transport:   &nopTransporter{},
 		},
+		cfg:      &ServerConfig{},
 		store:    st,
 		cluster:  cl,
 		reqIDGen: idutil.NewGenerator(0, time.Time{}),
@@ -898,10 +959,11 @@ func TestRemoveMember(t *testing.T) {
 	s := &EtcdServer{
 		r: raftNode{
 			Node:        n,
-			raftStorage: raft.NewMemoryStorage(),
+			raftStorage: newRaftStorage(),
 			storage:     &storageRecorder{},
 			transport:   &nopTransporter{},
 		},
+		cfg:      &ServerConfig{},
 		store:    st,
 		cluster:  cl,
 		reqIDGen: idutil.NewGenerator(0, time.Time{}),
@@ -936,7 +998,7 @@ func TestUpdateMember(t *testing.T) {
 	s := &EtcdServer{
 		r: raftNode{
 			Node:        n,
-			raftStorage: raft.NewMemoryStorage(),
+			raftStorage: newRaftStorage(),
 			storage:     &storageRecorder{},
 			transport:   &nopTransporter{},
 		},
@@ -1037,7 +1099,8 @@ func TestPublishRetry(t *testing.T) {
 		done:     make(chan struct{}),
 		reqIDGen: idutil.NewGenerator(0, time.Time{}),
 	}
-	time.AfterFunc(500*time.Microsecond, func() { close(srv.done) })
+	// TODO: use fakeClockwork
+	time.AfterFunc(10*time.Millisecond, func() { close(srv.done) })
 	srv.publish(10 * time.Nanosecond)
 
 	action := n.Action()
@@ -1410,13 +1473,16 @@ func (n *readyNode) Ready() <-chan raft.Ready { return n.readyc }
 
 type nopTransporter struct{}
 
-func (s *nopTransporter) Handler() http.Handler               { return nil }
-func (s *nopTransporter) Send(m []raftpb.Message)             {}
-func (s *nopTransporter) AddRemote(id types.ID, us []string)  {}
-func (s *nopTransporter) AddPeer(id types.ID, us []string)    {}
-func (s *nopTransporter) RemovePeer(id types.ID)              {}
-func (s *nopTransporter) RemoveAllPeers()                     {}
-func (s *nopTransporter) UpdatePeer(id types.ID, us []string) {}
-func (s *nopTransporter) Stop()                               {}
-func (s *nopTransporter) Pause()                              {}
-func (s *nopTransporter) Resume()                             {}
+func (s *nopTransporter) Start() error                                 { return nil }
+func (s *nopTransporter) Handler() http.Handler                        { return nil }
+func (s *nopTransporter) Send(m []raftpb.Message)                      {}
+func (s *nopTransporter) AddRemote(id types.ID, us []string)           {}
+func (s *nopTransporter) AddPeer(id types.ID, us []string)             {}
+func (s *nopTransporter) RemovePeer(id types.ID)                       {}
+func (s *nopTransporter) RemoveAllPeers()                              {}
+func (s *nopTransporter) UpdatePeer(id types.ID, us []string)          {}
+func (s *nopTransporter) ActiveSince(id types.ID) time.Time            { return time.Time{} }
+func (s *nopTransporter) SnapshotReady(rc io.ReadCloser, index uint64) {}
+func (s *nopTransporter) Stop()                                        {}
+func (s *nopTransporter) Pause()                                       {}
+func (s *nopTransporter) Resume()                                      {}

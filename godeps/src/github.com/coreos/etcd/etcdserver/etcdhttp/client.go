@@ -128,8 +128,9 @@ func (h *keysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
 	defer cancel()
-
-	rr, err := parseKeyRequest(r, clockwork.NewRealClock())
+	clock := clockwork.NewRealClock()
+	startTime := clock.Now()
+	rr, err := parseKeyRequest(r, clock)
 	if err != nil {
 		writeKeyError(w, err)
 		return
@@ -139,11 +140,14 @@ func (h *keysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeKeyNoAuth(w)
 		return
 	}
-
+	if !rr.Wait {
+		reportRequestReceived(rr)
+	}
 	resp, err := h.server.Do(ctx, rr)
 	if err != nil {
 		err = trimErrorPrefix(err, etcdserver.StoreKeysPrefix)
 		writeKeyError(w, err)
+		reportRequestFailed(rr, err)
 		return
 	}
 	switch {
@@ -152,6 +156,7 @@ func (h *keysHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Should never be reached
 			plog.Errorf("error writing event (%v)", err)
 		}
+		reportRequestCompleted(rr, resp, startTime)
 	case resp.Watcher != nil:
 		ctx, cancel := context.WithTimeout(context.Background(), defaultWatchTimeout)
 		defer cancel()
@@ -186,7 +191,7 @@ func (h *membersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasWriteRootAccess(h.sec, r) {
-		writeNoAuth(w)
+		writeNoAuth(w, r)
 		return
 	}
 	w.Header().Set("X-Etcd-Cluster-ID", h.cluster.ID().String())
@@ -206,7 +211,7 @@ func (h *membersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "leader":
 			id := h.server.Leader()
 			if id == 0 {
-				writeError(w, httptypes.NewHTTPError(http.StatusServiceUnavailable, "During election"))
+				writeError(w, r, httptypes.NewHTTPError(http.StatusServiceUnavailable, "During election"))
 				return
 			}
 			m := newMember(h.cluster.Member(id))
@@ -215,7 +220,7 @@ func (h *membersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				plog.Warningf("failed to encode members response (%v)", err)
 			}
 		default:
-			writeError(w, httptypes.NewHTTPError(http.StatusNotFound, "Not found"))
+			writeError(w, r, httptypes.NewHTTPError(http.StatusNotFound, "Not found"))
 		}
 	case "POST":
 		req := httptypes.MemberCreateRequest{}
@@ -227,11 +232,11 @@ func (h *membersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err := h.server.AddMember(ctx, *m)
 		switch {
 		case err == etcdserver.ErrIDExists || err == etcdserver.ErrPeerURLexists:
-			writeError(w, httptypes.NewHTTPError(http.StatusConflict, err.Error()))
+			writeError(w, r, httptypes.NewHTTPError(http.StatusConflict, err.Error()))
 			return
 		case err != nil:
 			plog.Errorf("error adding member %s (%v)", m.ID, err)
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		res := newMember(m)
@@ -248,12 +253,12 @@ func (h *membersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err := h.server.RemoveMember(ctx, uint64(id))
 		switch {
 		case err == etcdserver.ErrIDRemoved:
-			writeError(w, httptypes.NewHTTPError(http.StatusGone, fmt.Sprintf("Member permanently removed: %s", id)))
+			writeError(w, r, httptypes.NewHTTPError(http.StatusGone, fmt.Sprintf("Member permanently removed: %s", id)))
 		case err == etcdserver.ErrIDNotFound:
-			writeError(w, httptypes.NewHTTPError(http.StatusNotFound, fmt.Sprintf("No such member: %s", id)))
+			writeError(w, r, httptypes.NewHTTPError(http.StatusNotFound, fmt.Sprintf("No such member: %s", id)))
 		case err != nil:
 			plog.Errorf("error removing member %s (%v)", id, err)
-			writeError(w, err)
+			writeError(w, r, err)
 		default:
 			w.WriteHeader(http.StatusNoContent)
 		}
@@ -273,12 +278,12 @@ func (h *membersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err := h.server.UpdateMember(ctx, m)
 		switch {
 		case err == etcdserver.ErrPeerURLexists:
-			writeError(w, httptypes.NewHTTPError(http.StatusConflict, err.Error()))
+			writeError(w, r, httptypes.NewHTTPError(http.StatusConflict, err.Error()))
 		case err == etcdserver.ErrIDNotFound:
-			writeError(w, httptypes.NewHTTPError(http.StatusNotFound, fmt.Sprintf("No such member: %s", id)))
+			writeError(w, r, httptypes.NewHTTPError(http.StatusNotFound, fmt.Sprintf("No such member: %s", id)))
 		case err != nil:
 			plog.Errorf("error updating member %s (%v)", m.ID, err)
-			writeError(w, err)
+			writeError(w, r, err)
 		default:
 			w.WriteHeader(http.StatusNoContent)
 		}
@@ -311,7 +316,7 @@ func (h *statsHandler) serveLeader(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := h.stats.LeaderStats()
 	if stats == nil {
-		writeError(w, httptypes.NewHTTPError(http.StatusForbidden, "not current leader"))
+		writeError(w, r, httptypes.NewHTTPError(http.StatusForbidden, "not current leader"))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -319,6 +324,10 @@ func (h *statsHandler) serveLeader(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveVars(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r.Method, "GET") {
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	fmt.Fprintf(w, "{\n")
 	first := true
@@ -381,6 +390,7 @@ func serveVersion(w http.ResponseWriter, r *http.Request, clusterV string) {
 		Cluster: clusterV,
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	b, err := json.Marshal(&vs)
 	if err != nil {
 		plog.Panicf("cannot marshal versions to json (%v)", err)
@@ -397,13 +407,13 @@ func logHandleFunc(w http.ResponseWriter, r *http.Request) {
 
 	d := json.NewDecoder(r.Body)
 	if err := d.Decode(&in); err != nil {
-		writeError(w, httptypes.NewHTTPError(http.StatusBadRequest, "Invalid json body"))
+		writeError(w, r, httptypes.NewHTTPError(http.StatusBadRequest, "Invalid json body"))
 		return
 	}
 
 	logl, err := capnslog.ParseLevel(strings.ToUpper(in.Level))
 	if err != nil {
-		writeError(w, httptypes.NewHTTPError(http.StatusBadRequest, "Invalid log level "+in.Level))
+		writeError(w, r, httptypes.NewHTTPError(http.StatusBadRequest, "Invalid log level "+in.Level))
 		return
 	}
 
@@ -593,9 +603,10 @@ func writeKeyError(w http.ResponseWriter, err error) {
 	case *etcdErr.Error:
 		e.WriteTo(w)
 	default:
-		if err == etcdserver.ErrTimeoutDueToLeaderFail {
+		switch err {
+		case etcdserver.ErrTimeoutDueToLeaderFail, etcdserver.ErrTimeoutDueToConnectionLost:
 			plog.Error(err)
-		} else {
+		default:
 			plog.Errorf("got unexpected response error (%v)", err)
 		}
 		ee := etcdErr.NewError(etcdErr.EcodeRaftInternal, err.Error(), 0)
@@ -682,16 +693,16 @@ func trimErrorPrefix(err error, prefix string) error {
 func unmarshalRequest(r *http.Request, req json.Unmarshaler, w http.ResponseWriter) bool {
 	ctype := r.Header.Get("Content-Type")
 	if ctype != "application/json" {
-		writeError(w, httptypes.NewHTTPError(http.StatusUnsupportedMediaType, fmt.Sprintf("Bad Content-Type %s, accept application/json", ctype)))
+		writeError(w, r, httptypes.NewHTTPError(http.StatusUnsupportedMediaType, fmt.Sprintf("Bad Content-Type %s, accept application/json", ctype)))
 		return false
 	}
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, httptypes.NewHTTPError(http.StatusBadRequest, err.Error()))
+		writeError(w, r, httptypes.NewHTTPError(http.StatusBadRequest, err.Error()))
 		return false
 	}
 	if err := req.UnmarshalJSON(b); err != nil {
-		writeError(w, httptypes.NewHTTPError(http.StatusBadRequest, err.Error()))
+		writeError(w, r, httptypes.NewHTTPError(http.StatusBadRequest, err.Error()))
 		return false
 	}
 	return true
@@ -705,7 +716,7 @@ func getID(p string, w http.ResponseWriter) (types.ID, bool) {
 	}
 	id, err := types.IDFromString(idStr)
 	if err != nil {
-		writeError(w, httptypes.NewHTTPError(http.StatusNotFound, fmt.Sprintf("No such member: %s", idStr)))
+		writeError(w, nil, httptypes.NewHTTPError(http.StatusNotFound, fmt.Sprintf("No such member: %s", idStr)))
 		return 0, false
 	}
 	return id, true

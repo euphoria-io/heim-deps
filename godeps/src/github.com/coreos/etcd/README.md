@@ -1,7 +1,10 @@
 # etcd
 
-[![Build Status](https://travis-ci.org/coreos/etcd.png?branch=master)](https://travis-ci.org/coreos/etcd)
+[![Build Status](https://travis-ci.org/coreos/etcd.svg?branch=master)](https://travis-ci.org/coreos/etcd)
+[![Build Status](https://semaphoreci.com/api/v1/projects/406f9909-2f4f-4839-b59e-95082cb088f1/575109/badge.svg)](https://semaphoreci.com/coreos/etcd)
 [![Docker Repository on Quay.io](https://quay.io/repository/coreos/etcd-git/status "Docker Repository on Quay.io")](https://quay.io/repository/coreos/etcd-git)
+
+**Note**: `master` branch may be in *unstable or even broken state* during development. Please use [releases][github-release] instead of `master` branch to get stable binaries.
 
 ![etcd Logo](logos/etcd-horizontal-color.png)
 
@@ -26,9 +29,10 @@ If you're considering etcd for production use, please see: [production-ready.md]
 
 ### Getting etcd
 
-The easiest way to get etcd is to install one of the pre-built binaries from the tagged releases: instructions are available on [GitHub][github-release].
+The easiest way to get etcd is to use one of the pre-built release binaries which are available for OSX, Linux, Windows, AppC (ACI), and Docker. Instructions for using these binaries are on the [GitHub releases page][github-release].
 
 For those wanting to try the very latest version, you can build the latest version of etcd from the `master` branch.
+You will first need [*Go*](https://golang.org/) installed on your machine (version 1.4+ is required).
 All development occurs on `master`, including new features and bug fixes.
 Bug fixes are first targeted at `master` and subsequently ported to release branches, as described in the [branch management][branch-management] guide.
 
@@ -78,7 +82,7 @@ Now it's time to dig into the full etcd API and other guides.
 - Find [language bindings and tools][libraries-and-tools].
 - Use TLS to [secure an etcd cluster][security].
 - [Tune etcd][tuning].
-- [Upgrade from 0.4.6 to 2.0.0][upgrade].
+- [Upgrade from 0.4.9+ to 2.2.0][upgrade].
 
 [api]: ./Documentation/api.md
 [clustering]: ./Documentation/clustering.md
@@ -86,7 +90,7 @@ Now it's time to dig into the full etcd API and other guides.
 [libraries-and-tools]: ./Documentation/libraries-and-tools.md
 [security]: ./Documentation/security.md
 [tuning]: ./Documentation/tuning.md
-[upgrade]: ./tools/etcd-migrate/README.md
+[upgrade]: ./Documentation/04_to_2_snapshot_migration.md
 
 ## Contact
 
@@ -101,7 +105,7 @@ See [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the co
 
 ## Reporting bugs
 
-See [reporting bugs](Documentation/reporting_bugs.md) for details about reporting any issue you may encounter..
+See [reporting bugs](Documentation/reporting_bugs.md) for details about reporting any issue you may encounter.
 
 ## Project Details
 

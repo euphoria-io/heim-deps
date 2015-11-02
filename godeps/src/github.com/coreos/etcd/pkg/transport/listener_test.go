@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 )
 
 func createTempFile(b []byte) (string, error) {
@@ -115,7 +116,7 @@ func TestNewTransportTLSInfo(t *testing.T) {
 
 	for i, tt := range tests {
 		tt.parseFunc = fakeCertificateParserFunc(tls.Certificate{}, nil)
-		trans, err := NewTransport(tt)
+		trans, err := NewTransport(tt, time.Second)
 		if err != nil {
 			t.Fatalf("Received unexpected error from NewTransport: %v", err)
 		}
@@ -164,7 +165,7 @@ func TestTLSInfoMissingFields(t *testing.T) {
 	}
 
 	for i, info := range tests {
-		if _, err := info.ServerConfig(); err == nil {
+		if _, err = info.ServerConfig(); err == nil {
 			t.Errorf("#%d: expected non-nil error from ServerConfig()", i)
 		}
 
@@ -184,7 +185,7 @@ func TestTLSInfoParseFuncError(t *testing.T) {
 	info := TLSInfo{CertFile: tmp, KeyFile: tmp, CAFile: tmp}
 	info.parseFunc = fakeCertificateParserFunc(tls.Certificate{}, errors.New("fake"))
 
-	if _, err := info.ServerConfig(); err == nil {
+	if _, err = info.ServerConfig(); err == nil {
 		t.Errorf("expected non-nil error from ServerConfig()")
 	}
 
