@@ -34,10 +34,10 @@ print_js_versions() {
 
 update_go_deps() {
   rm -rf godeps
-  mkdir -p godeps/src go/src/euphoria.io
-  cp -r $HEIMDIR go/src/euphoria.io
+  mkdir -p godeps/src/euphoria.io
+  cp -r $HEIMDIR/ godeps/src/euphoria.io/heim
 
-  GOPATH=`pwd`/godeps:`pwd`/go go get -d -t euphoria.io/heim/... github.com/coreos/etcd
+  GOPATH=`pwd`/godeps go get -d -t -x ./godeps/src/euphoria.io/heim/... github.com/coreos/etcd
 
   # pin go-etcd to v0.4.6 (until coreos upgrades to etcd 2.0)
   git --git-dir=godeps/src/github.com/coreos/go-etcd/.git \
@@ -50,7 +50,7 @@ update_go_deps() {
   # and likewise for hg repos
   find godeps -depth -name .hg -type d -execdir sh -c "hg parent -T '{node}\n' > hg-HEAD && rm -rf .hg" \;
 
-  rm -rf go
+  rm -rf godeps/src/euphoria.io/heim
 }
 
 print_go_versions() {
