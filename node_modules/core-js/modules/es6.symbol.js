@@ -4,8 +4,8 @@ var $              = require('./$')
   , global         = require('./$.global')
   , has            = require('./$.has')
   , DESCRIPTORS    = require('./$.descriptors')
-  , $def           = require('./$.def')
-  , $redef         = require('./$.redef')
+  , $export        = require('./$.export')
+  , redefine       = require('./$.redefine')
   , $fails         = require('./$.fails')
   , shared         = require('./$.shared')
   , setToStringTag = require('./$.set-to-string-tag')
@@ -141,7 +141,7 @@ if(!useNative){
     if(isSymbol(this))throw TypeError('Symbol is not a constructor');
     return wrap(uid(arguments.length > 0 ? arguments[0] : undefined));
   };
-  $redef($Symbol.prototype, 'toString', function toString(){
+  redefine($Symbol.prototype, 'toString', function toString(){
     return this._k;
   });
 
@@ -158,7 +158,7 @@ if(!useNative){
   $.getSymbols = $getOwnPropertySymbols;
 
   if(DESCRIPTORS && !require('./$.library')){
-    $redef(ObjectProto, 'propertyIsEnumerable', $propertyIsEnumerable, true);
+    redefine(ObjectProto, 'propertyIsEnumerable', $propertyIsEnumerable, true);
   }
 }
 
@@ -197,11 +197,11 @@ $.each.call((
 
 setter = true;
 
-$def($def.G + $def.W, {Symbol: $Symbol});
+$export($export.G + $export.W, {Symbol: $Symbol});
 
-$def($def.S, 'Symbol', symbolStatics);
+$export($export.S, 'Symbol', symbolStatics);
 
-$def($def.S + $def.F * !useNative, 'Object', {
+$export($export.S + $export.F * !useNative, 'Object', {
   // 19.1.2.2 Object.create(O [, Properties])
   create: $create,
   // 19.1.2.4 Object.defineProperty(O, P, Attributes)
@@ -217,7 +217,7 @@ $def($def.S + $def.F * !useNative, 'Object', {
 });
 
 // 24.3.2 JSON.stringify(value [, replacer [, space]])
-$JSON && $def($def.S + $def.F * (!useNative || buggyJSON), 'JSON', {stringify: $stringify});
+$JSON && $export($export.S + $export.F * (!useNative || buggyJSON), 'JSON', {stringify: $stringify});
 
 // 19.4.3.5 Symbol.prototype[@@toStringTag]
 setToStringTag($Symbol, 'Symbol');

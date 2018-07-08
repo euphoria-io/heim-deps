@@ -1,8 +1,8 @@
 'use strict';
 var global         = require('./$.global')
-  , $def           = require('./$.def')
-  , $redef         = require('./$.redef')
-  , mix            = require('./$.mix')
+  , $export        = require('./$.export')
+  , redefine       = require('./$.redefine')
+  , redefineAll    = require('./$.redefine-all')
   , forOf          = require('./$.for-of')
   , strictNew      = require('./$.strict-new')
   , isObject       = require('./$.is-object')
@@ -18,7 +18,7 @@ module.exports = function(NAME, wrapper, methods, common, IS_MAP, IS_WEAK){
     , O     = {};
   var fixMethod = function(KEY){
     var fn = proto[KEY];
-    $redef(proto, KEY,
+    redefine(proto, KEY,
       KEY == 'delete' ? function(a){
         return IS_WEAK && !isObject(a) ? false : fn.call(this, a === 0 ? 0 : a);
       } : KEY == 'has' ? function has(a){
@@ -34,7 +34,7 @@ module.exports = function(NAME, wrapper, methods, common, IS_MAP, IS_WEAK){
   }))){
     // create collection constructor
     C = common.getConstructor(wrapper, NAME, IS_MAP, ADDER);
-    mix(C.prototype, methods);
+    redefineAll(C.prototype, methods);
   } else {
     var instance             = new C
       // early implementations not supports chaining
@@ -71,7 +71,7 @@ module.exports = function(NAME, wrapper, methods, common, IS_MAP, IS_WEAK){
   setToStringTag(C, NAME);
 
   O[NAME] = C;
-  $def($def.G + $def.W + $def.F * (C != Base), O);
+  $export($export.G + $export.W + $export.F * (C != Base), O);
 
   if(!IS_WEAK)common.setStrong(C, NAME, IS_MAP);
 
